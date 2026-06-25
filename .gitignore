@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Environment
+.env
+.venv/
+venv/
+env/
+
+# Cache
+.cache/
+tmp/
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Models / data
+*.gguf
+chroma_db/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# HuggingFace / torch
+*.safetensors
+*.bin
