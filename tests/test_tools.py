@@ -8,11 +8,12 @@ from agent.tools import TOOL_DISPATCH, TOOL_DEFINITIONS
 
 @pytest.mark.asyncio
 async def test_rag_retrieval_returns_json():
+    # Tools use lazy imports inside function bodies — patch at source modules
     mock_results = [{"content": "test chunk", "arxiv_id": "2024.0001", "title": "Test Paper"}]
     with (
-        patch("agent.tools.embed_query", return_value=[0.1] * 768),
-        patch("agent.tools.get_connection") as mock_conn_cm,
-        patch("agent.tools.search_similar_chunks", new_callable=AsyncMock, return_value=mock_results),
+        patch("ingestion.embed.embed_query", return_value=[0.1] * 768),
+        patch("db.connection.get_connection") as mock_conn_cm,
+        patch("db.queries.search_similar_chunks", new_callable=AsyncMock, return_value=mock_results),
     ):
         mock_conn = AsyncMock()
         mock_conn_cm.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
@@ -26,7 +27,7 @@ async def test_rag_retrieval_returns_json():
 
 @pytest.mark.asyncio
 async def test_rag_retrieval_handles_error():
-    with patch("agent.tools.embed_query", side_effect=RuntimeError("DB not ready")):
+    with patch("ingestion.embed.embed_query", side_effect=RuntimeError("DB not ready")):
         result = await TOOL_DISPATCH["rag_retrieval"]("test query")
         data = json.loads(result)
         assert "error" in data
@@ -35,8 +36,9 @@ async def test_rag_retrieval_handles_error():
 
 @pytest.mark.asyncio
 async def test_web_search_returns_json():
+    ddgs = pytest.importorskip("duckduckgo_search", reason="duckduckgo_search not installed")
     mock_results = [{"title": "Test", "href": "http://example.com", "body": "snippet"}]
-    with patch("agent.tools.DDGS") as mock_ddgs_cls:
+    with patch("duckduckgo_search.DDGS") as mock_ddgs_cls:
         mock_ddgs = MagicMock()
         mock_ddgs.text.return_value = mock_results
         mock_ddgs_cls.return_value.__enter__ = MagicMock(return_value=mock_ddgs)
