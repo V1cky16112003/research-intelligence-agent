@@ -175,7 +175,7 @@ async def run_evaluation(args: argparse.Namespace) -> dict:
 
         result = ragas_evaluate(
             dataset=dataset,
-            metrics=[faithfulness, answer_relevancy, context_precision],
+            metrics=[faithfulness(), answer_relevancy(), context_precision()],
             llm=judge_llm,
             embeddings=judge_embeddings,
         )
