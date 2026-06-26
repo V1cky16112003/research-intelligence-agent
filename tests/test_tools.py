@@ -36,7 +36,7 @@ async def test_rag_retrieval_handles_error():
 
 @pytest.mark.asyncio
 async def test_web_search_returns_json():
-    ddgs = pytest.importorskip("duckduckgo_search", reason="duckduckgo_search not installed")
+    pytest.importorskip("duckduckgo_search", reason="duckduckgo_search not installed")
     mock_results = [{"title": "Test", "href": "http://example.com", "body": "snippet"}]
     with patch("duckduckgo_search.DDGS") as mock_ddgs_cls:
         mock_ddgs = MagicMock()

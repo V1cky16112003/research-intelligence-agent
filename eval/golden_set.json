@@ -1,0 +1,142 @@
+[
+  {
+    "id": "q001",
+    "question": "What is the attention mechanism in transformers and how does it work?",
+    "ground_truth": "The attention mechanism allows transformers to weigh the importance of different input tokens when producing each output token. Self-attention computes query, key, and value vectors for each token and uses scaled dot-product attention to aggregate context.",
+    "contexts": ["attention is all you need", "self-attention", "transformer architecture"],
+    "category": "cs.LG"
+  },
+  {
+    "id": "q002",
+    "question": "What are the key differences between BERT and GPT language model architectures?",
+    "ground_truth": "BERT uses bidirectional encoder-only transformers trained with masked language modeling, while GPT uses unidirectional decoder-only transformers trained with causal language modeling. BERT is better for understanding tasks; GPT for generation.",
+    "contexts": ["BERT", "GPT", "language model", "encoder decoder"],
+    "category": "cs.CL"
+  },
+  {
+    "id": "q003",
+    "question": "How do diffusion models generate images?",
+    "ground_truth": "Diffusion models generate images by learning to reverse a gradual noising process. During training, noise is progressively added to images. During inference, the model iteratively denoises random noise into a coherent image, guided by a learned score function.",
+    "contexts": ["diffusion model", "denoising", "score matching", "DDPM"],
+    "category": "cs.CV"
+  },
+  {
+    "id": "q004",
+    "question": "What is retrieval-augmented generation (RAG) and why is it useful?",
+    "ground_truth": "RAG combines a retrieval system with a language model: relevant documents are retrieved from a knowledge base and provided as context to the LLM, reducing hallucinations and allowing the model to answer questions about information not in its training data.",
+    "contexts": ["retrieval augmented generation", "RAG", "knowledge base", "hallucination"],
+    "category": "cs.CL"
+  },
+  {
+    "id": "q005",
+    "question": "What is the role of the critic network in reinforcement learning from human feedback (RLHF)?",
+    "ground_truth": "In RLHF, the critic (reward model) is trained on human preference data to score model outputs. It provides the reward signal used to fine-tune the language model via PPO or similar RL algorithms, aligning model behavior with human preferences.",
+    "contexts": ["RLHF", "reward model", "PPO", "human feedback", "alignment"],
+    "category": "cs.LG"
+  },
+  {
+    "id": "q006",
+    "question": "How does LoRA reduce the number of trainable parameters in fine-tuning?",
+    "ground_truth": "LoRA (Low-Rank Adaptation) freezes the pre-trained model weights and injects trainable rank-decomposition matrices into each layer. Instead of updating the full weight matrix W, it learns two small matrices A and B where the update is BA, drastically reducing parameters.",
+    "contexts": ["LoRA", "low-rank adaptation", "fine-tuning", "parameter efficient"],
+    "category": "cs.LG"
+  },
+  {
+    "id": "q007",
+    "question": "What is the vanishing gradient problem and how do residual connections solve it?",
+    "ground_truth": "In deep networks, gradients diminish exponentially during backpropagation, making early layers hard to train. Residual connections (skip connections) add the input directly to the output of a layer, creating gradient highways that allow gradients to flow unchanged to earlier layers.",
+    "contexts": ["vanishing gradient", "residual connection", "skip connection", "deep learning"],
+    "category": "cs.LG"
+  },
+  {
+    "id": "q008",
+    "question": "What is contrastive learning and how is it used in self-supervised representation learning?",
+    "ground_truth": "Contrastive learning trains encoders by pulling representations of similar (positive) pairs together and pushing dissimilar (negative) pairs apart, without labels. Methods like SimCLR and MoCo use data augmentation to create positive pairs from the same image.",
+    "contexts": ["contrastive learning", "SimCLR", "MoCo", "self-supervised", "representation learning"],
+    "category": "cs.CV"
+  },
+  {
+    "id": "q009",
+    "question": "How does the mixture of experts (MoE) architecture scale language models efficiently?",
+    "ground_truth": "MoE replaces dense feed-forward layers with multiple expert networks and a learned router that selects a sparse subset of experts per token. This increases model capacity without proportionally increasing computation, enabling very large models to be trained efficiently.",
+    "contexts": ["mixture of experts", "MoE", "sparse routing", "expert network"],
+    "category": "cs.LG"
+  },
+  {
+    "id": "q010",
+    "question": "What is the CLIP model and how does it connect images and text?",
+    "ground_truth": "CLIP (Contrastive Language-Image Pretraining) trains a visual encoder and text encoder jointly using contrastive learning on 400M image-text pairs from the web. The encoders learn a shared embedding space where matching image-text pairs are close together.",
+    "contexts": ["CLIP", "contrastive language image", "visual encoder", "text encoder", "zero-shot"],
+    "category": "cs.CV"
+  },
+  {
+    "id": "q011",
+    "question": "What problem does the Mamba state space model solve compared to transformers?",
+    "ground_truth": "Mamba addresses the quadratic complexity of transformer self-attention with sequence length. Using selective state space models (SSMs), Mamba achieves linear-time sequence modeling, making it efficient for very long sequences while maintaining competitive performance.",
+    "contexts": ["Mamba", "state space model", "SSM", "linear attention", "long sequence"],
+    "category": "cs.LG"
+  },
+  {
+    "id": "q012",
+    "question": "How does knowledge distillation transfer knowledge from a large teacher model to a smaller student model?",
+    "ground_truth": "Knowledge distillation trains a small student model to mimic the soft output probabilities (logits) of a large teacher model rather than just hard labels. The soft targets carry richer information about class similarities, enabling the student to generalize better.",
+    "contexts": ["knowledge distillation", "teacher student", "soft labels", "model compression"],
+    "category": "cs.LG"
+  },
+  {
+    "id": "q013",
+    "question": "What is the role of positional encoding in transformer models?",
+    "ground_truth": "Transformers have no inherent notion of token order since attention is permutation-equivariant. Positional encodings inject position information by adding fixed or learned vectors to token embeddings, allowing the model to distinguish token positions.",
+    "contexts": ["positional encoding", "position embedding", "rotary embedding", "transformer"],
+    "category": "cs.LG"
+  },
+  {
+    "id": "q014",
+    "question": "How do vision transformers (ViT) process images differently from CNNs?",
+    "ground_truth": "ViT splits an image into fixed-size patches, linearly embeds each patch, and processes the sequence with a standard transformer encoder. Unlike CNNs with their inductive biases for locality and translation invariance, ViT learns spatial relationships purely through self-attention.",
+    "contexts": ["vision transformer", "ViT", "image patch", "CNN comparison"],
+    "category": "cs.CV"
+  },
+  {
+    "id": "q015",
+    "question": "What is flash attention and why does it make transformer training faster?",
+    "ground_truth": "Flash Attention is an IO-aware exact attention algorithm that tiles the attention computation to minimize memory reads/writes between GPU HBM and SRAM. It achieves the same mathematical result as standard attention but is 2-4x faster by reducing memory bandwidth usage.",
+    "contexts": ["flash attention", "IO-aware", "HBM", "SRAM", "memory efficient attention"],
+    "category": "cs.LG"
+  },
+  {
+    "id": "q016",
+    "question": "What are the main evaluation metrics used for large language models?",
+    "ground_truth": "LLMs are evaluated on benchmarks like MMLU (general knowledge), HumanEval (coding), GSM8K (math reasoning), and HellaSwag (commonsense). Automated metrics include perplexity, BLEU, ROUGE, and BERTScore; human evaluation and LLM-as-judge are used for open-ended generation.",
+    "contexts": ["LLM evaluation", "MMLU", "HumanEval", "benchmark", "perplexity"],
+    "category": "cs.CL"
+  },
+  {
+    "id": "q017",
+    "question": "How does speculative decoding speed up LLM inference?",
+    "ground_truth": "Speculative decoding uses a small draft model to generate several tokens in parallel, then verifies them with the large target model in a single forward pass. Accepted tokens are kept; rejected ones trigger resampling. This reduces the number of large model forward passes needed.",
+    "contexts": ["speculative decoding", "draft model", "inference acceleration", "token prediction"],
+    "category": "cs.LG"
+  },
+  {
+    "id": "q018",
+    "question": "What is gradient checkpointing and when is it used in training deep networks?",
+    "ground_truth": "Gradient checkpointing trades compute for memory by not storing all intermediate activations during the forward pass. Instead, activations are recomputed during backpropagation as needed. It allows training larger models or larger batches at the cost of ~33% more compute.",
+    "contexts": ["gradient checkpointing", "activation recomputation", "memory efficiency", "training"],
+    "category": "cs.LG"
+  },
+  {
+    "id": "q019",
+    "question": "How does chain-of-thought prompting improve reasoning in LLMs?",
+    "ground_truth": "Chain-of-thought (CoT) prompting elicits step-by-step reasoning by including example reasoning chains in the prompt. This allows LLMs to decompose complex problems into intermediate steps, significantly improving performance on arithmetic, commonsense, and symbolic reasoning tasks.",
+    "contexts": ["chain of thought", "CoT", "reasoning", "prompting", "few-shot"],
+    "category": "cs.CL"
+  },
+  {
+    "id": "q020",
+    "question": "What is the difference between in-context learning and fine-tuning in LLMs?",
+    "ground_truth": "In-context learning (ICL) adapts an LLM at inference time by providing examples in the prompt without updating weights. Fine-tuning updates model weights on task-specific data. ICL is flexible and requires no training but is limited by context length; fine-tuning is more efficient at inference but requires a training phase.",
+    "contexts": ["in-context learning", "ICL", "fine-tuning", "few-shot", "prompt"],
+    "category": "cs.CL"
+  }
+]
