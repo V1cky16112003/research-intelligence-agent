@@ -40,8 +40,8 @@ REPORTER_SYSTEM = """You are a research report writer. Synthesize the retrieved 
 
 async def planner_node(state: dict) -> dict:
     """Decompose user query into a tool-execution plan."""
-    from agent.gateway import LLMGateway
-    gw: LLMGateway = state["_gateway"]
+    from agent.registry import get_gateway
+    gw = get_gateway()
 
     messages = [
         {"role": "system", "content": PLANNER_SYSTEM},
@@ -120,8 +120,8 @@ async def executor_node(state: dict) -> dict:
 
 async def critic_node(state: dict) -> dict:
     """Evaluate whether retrieved context is sufficient to answer the query."""
-    from agent.gateway import LLMGateway
-    gw: LLMGateway = state["_gateway"]
+    from agent.registry import get_gateway
+    gw = get_gateway()
 
     # Summarise context for the critic
     chunks = state.get("retrieved_chunks", [])
@@ -159,8 +159,8 @@ async def critic_node(state: dict) -> dict:
 
 async def reporter_node(state: dict) -> dict:
     """Synthesize retrieved context into a final cited report."""
-    from agent.gateway import LLMGateway
-    gw: LLMGateway = state["_gateway"]
+    from agent.registry import get_gateway
+    gw = get_gateway()
 
     chunks = state.get("retrieved_chunks", [])
     sql = state.get("sql_results", [])

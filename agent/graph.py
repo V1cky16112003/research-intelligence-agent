@@ -74,7 +74,6 @@ async def init_graph() -> None:
 async def run_agent(
     user_query: str,
     session_id: str,
-    gateway: Any,
 ) -> dict[str, Any]:
     """
     Run the agent for a single query.
@@ -102,7 +101,6 @@ async def run_agent(
         "llm_provider": None,
         "tokens_in": 0,
         "tokens_out": 0,
-        "_gateway": gateway,   # injected — not persisted in checkpoint
         "_critic_verdict": "PASS",
     }
 

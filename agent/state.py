@@ -35,3 +35,6 @@ class AgentState(TypedDict):
     llm_provider: str | None
     tokens_in: int
     tokens_out: int
+
+    # Internal control (not checkpointed as objects, kept as plain values)
+    _critic_verdict: str

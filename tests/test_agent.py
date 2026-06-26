@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 @pytest.mark.asyncio
 async def test_planner_creates_plan():
     from agent.nodes import planner_node
+    from agent.registry import set_gateway
     mock_gw = MagicMock()
     mock_gw.chat = AsyncMock(return_value={
         "content": '[{"step": "search papers", "tool": "rag_retrieval", "args": {"query": "transformers"}}]',
@@ -14,7 +15,8 @@ async def test_planner_creates_plan():
         "tokens_in": 50,
         "tokens_out": 30,
     })
-    state = {"user_query": "Tell me about transformers", "session_id": "s1", "_gateway": mock_gw,
+    set_gateway(mock_gw)
+    state = {"user_query": "Tell me about transformers", "session_id": "s1",
              "tokens_in": 0, "tokens_out": 0}
     result = await planner_node(state)
     assert len(result["plan"]) == 1
@@ -25,6 +27,7 @@ async def test_planner_creates_plan():
 @pytest.mark.asyncio
 async def test_planner_handles_bad_json():
     from agent.nodes import planner_node
+    from agent.registry import set_gateway
     mock_gw = MagicMock()
     mock_gw.chat = AsyncMock(return_value={
         "content": "not valid json at all",
@@ -32,7 +35,8 @@ async def test_planner_handles_bad_json():
         "tokens_in": 10,
         "tokens_out": 5,
     })
-    state = {"user_query": "test query", "session_id": "s1", "_gateway": mock_gw,
+    set_gateway(mock_gw)
+    state = {"user_query": "test query", "session_id": "s1",
              "tokens_in": 0, "tokens_out": 0}
     result = await planner_node(state)
     # Falls back to default RAG plan
@@ -66,6 +70,7 @@ async def test_executor_calls_tool():
 @pytest.mark.asyncio
 async def test_critic_returns_pass():
     from agent.nodes import critic_node
+    from agent.registry import set_gateway
     mock_gw = MagicMock()
     mock_gw.chat = AsyncMock(return_value={
         "content": '{"verdict": "PASS", "reason": "sufficient context"}',
@@ -73,9 +78,9 @@ async def test_critic_returns_pass():
         "tokens_in": 20,
         "tokens_out": 10,
     })
+    set_gateway(mock_gw)
     state = {
         "user_query": "test",
-        "_gateway": mock_gw,
         "retrieved_chunks": [{"content": "some content"}],
         "sql_results": [],
         "retry_count": 0,
@@ -90,6 +95,7 @@ async def test_critic_returns_pass():
 @pytest.mark.asyncio
 async def test_reporter_produces_answer():
     from agent.nodes import reporter_node
+    from agent.registry import set_gateway
     mock_gw = MagicMock()
     mock_gw.chat = AsyncMock(return_value={
         "content": "Transformers use self-attention mechanisms. Sources: [2017.1234]",
@@ -97,9 +103,9 @@ async def test_reporter_produces_answer():
         "tokens_in": 100,
         "tokens_out": 80,
     })
+    set_gateway(mock_gw)
     state = {
         "user_query": "What are transformers?",
-        "_gateway": mock_gw,
         "retrieved_chunks": [{"content": "attention is all you need", "arxiv_id": "2017.1234", "title": "Attention", "authors": ["Vaswani"]}],
         "sql_results": [],
         "tokens_in": 0,

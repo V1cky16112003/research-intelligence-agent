@@ -62,12 +62,13 @@ async def lifespan(app: FastAPI):
 
     # LLM gateway
     from agent.gateway import LLMGateway
+    from agent.registry import set_gateway
     gateway = LLMGateway(
         groq_api_key=settings.groq_api_key,
         gemini_api_key=settings.gemini_api_key,
         redis_client=redis_client,
     )
-    app.state.gateway = gateway
+    set_gateway(gateway)
 
     # LangGraph agent
     from agent.graph import init_graph
@@ -116,7 +117,6 @@ async def chat(req: ChatRequest, request: Request):
         result = await run_agent(
             user_query=req.query,
             session_id=session_id,
-            gateway=request.app.state.gateway,
         )
         latency_ms = int((time.time() - start) * 1000)
 
