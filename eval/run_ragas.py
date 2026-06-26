@@ -172,10 +172,17 @@ async def run_evaluation(args: argparse.Namespace) -> dict:
             embeddings=judge_embeddings,
         )
 
+        def _mean(val) -> float:
+            # ragas 0.4.3 returns a per-sample list/Series, not a scalar
+            if hasattr(val, "mean"):
+                return float(val.mean())
+            vals = [v for v in val if v is not None]
+            return sum(vals) / len(vals) if vals else 0.0
+
         metrics = {
-            "faithfulness": float(result["faithfulness"]),
-            "answer_relevancy": float(result["answer_relevancy"]),
-            "context_precision": float(result["context_precision"]),
+            "faithfulness": _mean(result["faithfulness"]),
+            "answer_relevancy": _mean(result["answer_relevancy"]),
+            "context_precision": _mean(result["context_precision"]),
             "num_questions": len(questions),
         }
 
