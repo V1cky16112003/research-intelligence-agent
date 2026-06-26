@@ -17,10 +17,14 @@ pytest tests/test_agent.py -v
 # Run RAGAS evaluation against live DB
 python -m eval.run_ragas --ci --limit 10
 
-# Ingest ArXiv corpus (requires Kaggle dataset and running DB)
-python -m ingestion.loader --file /path/to/arxiv-metadata-oai-snapshot.json \
+# Stage 1: Load ArXiv papers into Neon (requires dataset + DATABASE_URL)
+DATABASE_URL="..." PYTHONPATH=. python3 -m ingestion.loader \
+  --file /path/to/arxiv-metadata-oai-snapshot.json \
   --limit 50000 --categories cs.LG,cs.AI,cs.CL,cs.CV
-python -m ingestion.pipeline --limit 50000
+
+# Stage 2: Embed chunks — run on Kaggle/Colab GPU (see kaggle_ingestion.ipynb)
+# Neon free tier is 512 MB; embed ~10k papers to stay within limit
+DATABASE_URL="..." PYTHONPATH=. python3 -m ingestion.pipeline --limit 10000 --batch-size 200
 
 # Local dev with Docker
 docker-compose up --build
@@ -37,7 +41,8 @@ The app is a FastAPI service (port 7860) deployed on Hugging Face Spaces (Docker
 Four-node state machine: **Planner → Executor → Critic → Reporter**
 
 - `state.py` — `AgentState` TypedDict; the graph's shared state schema
-- `nodes.py` — one async function per node; `_gateway` is injected into state (not checkpointed)
+- `nodes.py` — one async function per node; gateway is fetched from the module-level registry (not stored in state)
+- `registry.py` — module-level singleton (`set_gateway` / `get_gateway`); avoids LangGraph stripping non-schema state keys
 - `graph.py` — wires the graph, `init_graph()` sets up `AsyncPostgresSaver` at startup, falls back to in-memory if no DB
 - `tools.py` — `TOOL_DISPATCH` dict mapping tool name → async function: `rag_retrieval`, `sql_analytics`, `web_search`
 - `gateway.py` — `LLMGateway`: Groq (Llama 3.3 70B) primary, Gemini 2.5 Flash fallback on 429; wraps Upstash Redis cache
@@ -51,13 +56,19 @@ The Critic node returns `RETRY` or `PASS`; the graph loops back to Executor up t
 
 ### Database (`db/`)
 
-Neon Postgres with pgvector 0.8.0. Three tables: `papers`, `chunks` (768-dim HNSW index, nomic-embed-text-v2), `query_audit_log`. `connection.py` owns the `AsyncConnectionPool`; `queries.py` has analytics window functions (papers by month, p95 latency, etc.).
+Neon Postgres (free tier: 512 MB) with pgvector. Three tables: `papers`, `chunks` (768-dim HNSW index, nomic-embed-text-v2-moe), `query_audit_log`. `connection.py` owns the `AsyncConnectionPool`; `queries.py` has analytics window functions (papers by month, p95 latency, etc.).
+
+**pgvector note:** always use `register_vector_async(conn)` (not `register_vector`) with psycopg3 async connections.
 
 ### Ingestion (`ingestion/`)
 
 Two-stage pipeline:
-1. `loader.py` — reads ArXiv JSONL snapshot, filters by category, writes to `papers` table
-2. `pipeline.py` — chunks abstracts, embeds via `sentence-transformers` (nomic-embed-text-v2, 768-dim, CPU), upserts into `chunks` with pgvector
+1. `loader.py` — reads ArXiv JSONL snapshot, filters by category, writes to `papers` table (50k papers loaded)
+2. `pipeline.py` — batched architecture: buffers N papers, embeds all chunks at once via `sentence-transformers` (nomic-embed-text-v2-moe, 768-dim), bulk-inserts into `chunks` with pgvector
+
+**Cloud embedding:** `kaggle_ingestion.ipynb` is a self-contained notebook for running Stage 2 on Kaggle/Colab free T4 GPU (~7 min for 10k papers). The M1 Mac is too slow for the MoE model without megablocks. Currently ~10k papers are embedded due to Neon's 512 MB free tier limit.
+
+**Connector:** `ArxivAbstractConnector` streams papers from the `papers` table (includes `id` in SELECT to avoid redundant per-paper lookups).
 
 ### Evaluation (`eval/`)
 
