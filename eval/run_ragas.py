@@ -17,7 +17,15 @@ import json
 import logging
 import os
 import sys
+import types
 from pathlib import Path
+
+# ragas 0.4.3 eagerly imports langchain_community.chat_models.vertexai, which was
+# removed in langchain-community >= 0.3.0. Stub it out before ragas is imported.
+if "langchain_community.chat_models.vertexai" not in sys.modules:
+    sys.modules["langchain_community.chat_models.vertexai"] = types.ModuleType(
+        "langchain_community.chat_models.vertexai"
+    )
 
 logger = logging.getLogger(__name__)
 
