@@ -27,8 +27,14 @@ async def init_pool(
     if not url:
         logger.warning("DATABASE_URL not set — database features disabled")
         return
-    _pool = AsyncConnectionPool(conninfo=url, min_size=min_size, max_size=max_size, open=False)
-    await _pool.open()
+    _pool = AsyncConnectionPool(
+        conninfo=url,
+        min_size=min_size,
+        max_size=max_size,
+        open=False,
+        reconnect_timeout=30,
+    )
+    await _pool.open(wait=True, timeout=30)
     logger.info("Database pool initialized")
 
 
@@ -46,7 +52,7 @@ async def get_connection() -> AsyncGenerator[psycopg.AsyncConnection, None]:
     """Yield a connection from the pool."""
     if _pool is None:
         raise RuntimeError("Database not configured. Set DATABASE_URL env var and call init_pool().")
-    async with _pool.connection() as conn:
+    async with _pool.connection(timeout=15) as conn:
         yield conn
 
 
