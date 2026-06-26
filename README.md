@@ -1,3 +1,13 @@
+---
+title: Research Intelligence Agent
+emoji: 🔬
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+pinned: false
+app_port: 7860
+---
+
 # Autonomous Research Intelligence Agent
 
 An AI-powered research assistant for ArXiv ML papers. Ask questions in natural language — get cited, grounded answers backed by a 50K-paper corpus, with SQL analytics and live web search fallback.
