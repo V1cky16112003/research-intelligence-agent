@@ -140,10 +140,12 @@ async def run_evaluation(args: argparse.Namespace) -> dict:
     try:
         from ragas import EvaluationDataset, SingleTurnSample
         from ragas import evaluate as ragas_evaluate
-        from ragas.metrics.collections import answer_relevancy, context_precision, faithfulness
-        from ragas.llms import LangchainLLMWrapper
-        from ragas.embeddings import LangchainEmbeddingsWrapper
-        from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+        # ragas.metrics gives pre-instantiated singletons (no () needed);
+        # ragas.metrics.collections gives submodules which are not callable
+        from ragas.metrics import answer_relevancy, context_precision, faithfulness
+        from ragas.llms import llm_factory
+        from ragas.embeddings import embedding_factory
+        from openai import OpenAI
 
         samples = [
             SingleTurnSample(
@@ -158,24 +160,14 @@ async def run_evaluation(args: argparse.Namespace) -> dict:
 
         gemini_key = os.getenv("GEMINI_API_KEY", "")
         gemini_base = "https://generativelanguage.googleapis.com/v1beta/openai/"
+        gemini_client = OpenAI(api_key=gemini_key, base_url=gemini_base)
 
-        # ragas requires both a custom LLM and custom embeddings; without embeddings it
-        # tries to create OpenAIEmbeddings using OPENAI_API_KEY which we don't have.
-        judge_llm = LangchainLLMWrapper(ChatOpenAI(
-            model=args.judge_model,
-            openai_api_key=gemini_key,
-            openai_api_base=gemini_base,
-            temperature=0,
-        ))
-        judge_embeddings = LangchainEmbeddingsWrapper(OpenAIEmbeddings(
-            model="text-embedding-004",
-            openai_api_key=gemini_key,
-            openai_api_base=gemini_base,
-        ))
+        judge_llm = llm_factory(args.judge_model, client=gemini_client)
+        judge_embeddings = embedding_factory("openai", model="text-embedding-004", client=gemini_client)
 
         result = ragas_evaluate(
             dataset=dataset,
-            metrics=[faithfulness(), answer_relevancy(), context_precision()],
+            metrics=[faithfulness, answer_relevancy, context_precision],
             llm=judge_llm,
             embeddings=judge_embeddings,
         )
