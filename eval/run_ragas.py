@@ -20,12 +20,13 @@ import sys
 import types
 from pathlib import Path
 
-# ragas 0.4.3 eagerly imports langchain_community.chat_models.vertexai, which was
-# removed in langchain-community >= 0.3.0. Stub it out before ragas is imported.
+# ragas 0.4.3 eagerly imports ChatVertexAI from langchain_community.chat_models.vertexai,
+# which was removed in langchain-community >= 0.3.0. Stub the module with a dummy class
+# so the import succeeds; ragas never instantiates it because we pass our own judge_llm.
 if "langchain_community.chat_models.vertexai" not in sys.modules:
-    sys.modules["langchain_community.chat_models.vertexai"] = types.ModuleType(
-        "langchain_community.chat_models.vertexai"
-    )
+    _vertexai_stub = types.ModuleType("langchain_community.chat_models.vertexai")
+    _vertexai_stub.ChatVertexAI = type("ChatVertexAI", (), {})  # dummy — never instantiated
+    sys.modules["langchain_community.chat_models.vertexai"] = _vertexai_stub
 
 logger = logging.getLogger(__name__)
 
