@@ -87,7 +87,7 @@ def chunk_text(text: str, doc_id: str, section_title: str = "abstract") -> list[
     ]
 
 
-def embed_chunks(chunks: list[Chunk], batch_size: int = 64) -> list[tuple[Chunk, list[float]]]:
+def embed_chunks(chunks: list[Chunk], batch_size: int = 256) -> list[tuple[Chunk, list[float]]]:
     """
     Embed a list of chunks. Returns (chunk, embedding) pairs.
     nomic-embed requires 'search_document: ' prefix for passages.
@@ -96,14 +96,8 @@ def embed_chunks(chunks: list[Chunk], batch_size: int = 64) -> list[tuple[Chunk,
         return []
     model = get_model()
     texts = [f"search_document: {c.content}" for c in chunks]
-
-    all_embeddings = []
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i:i + batch_size]
-        embeddings = model.encode(batch, normalize_embeddings=True, show_progress_bar=False)
-        all_embeddings.extend(embeddings.tolist())
-
-    return list(zip(chunks, all_embeddings))
+    embeddings = model.encode(texts, normalize_embeddings=True, show_progress_bar=False, batch_size=batch_size)
+    return list(zip(chunks, embeddings.tolist()))
 
 
 def embed_query(query: str) -> list[float]:

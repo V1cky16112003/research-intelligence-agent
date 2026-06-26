@@ -47,7 +47,7 @@ class ArxivAbstractConnector(SourceConnector):
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    SELECT arxiv_id, title, authors, categories, abstract
+                    SELECT id, arxiv_id, title, authors, categories, abstract
                     FROM papers
                     WHERE abstract IS NOT NULL AND abstract != ''
                     ORDER BY published_at DESC
@@ -57,10 +57,10 @@ class ArxivAbstractConnector(SourceConnector):
                 )
                 async for row in cur:
                     yield Document(
-                        doc_id=row[0],
-                        title=row[1],
-                        authors=row[2] or [],
-                        categories=row[3] or [],
-                        content=row[4],
-                        metadata={},
+                        doc_id=row[1],
+                        title=row[2],
+                        authors=row[3] or [],
+                        categories=row[4] or [],
+                        content=row[5],
+                        metadata={"paper_id": row[0]},
                     )

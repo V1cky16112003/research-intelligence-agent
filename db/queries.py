@@ -49,10 +49,14 @@ async def insert_paper(conn: psycopg.AsyncConnection, paper: dict[str, Any]) -> 
         return row[0]
 
 
+async def _register_vector(conn: psycopg.AsyncConnection) -> None:
+    from pgvector.psycopg import register_vector_async
+    await register_vector_async(conn)
+
+
 async def insert_chunks_batch(conn: psycopg.AsyncConnection, chunks: list[dict[str, Any]]) -> None:
     """Bulk insert chunks with embeddings using executemany."""
-    from pgvector.psycopg import register_vector
-    await register_vector(conn)
+    await _register_vector(conn)
 
     sql = """
         INSERT INTO chunks (paper_id, section_title, chunk_index, content, token_count, embedding)
@@ -69,7 +73,8 @@ async def insert_chunks_batch(conn: psycopg.AsyncConnection, chunks: list[dict[s
         )
         for c in chunks
     ]
-    await conn.executemany(sql, params)
+    async with conn.cursor() as cur:
+        await cur.executemany(sql, params)
     logger.debug("Inserted %d chunks", len(chunks))
 
 
@@ -80,8 +85,7 @@ async def search_similar_chunks(
     categories: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Cosine similarity search with optional category filter."""
-    from pgvector.psycopg import register_vector
-    await register_vector(conn)
+    await _register_vector(conn)
 
     if categories:
         sql = """
