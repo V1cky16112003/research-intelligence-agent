@@ -90,14 +90,16 @@ async def run_evaluation(args: argparse.Namespace) -> dict:
     if db_url:
         await init_pool(db_url)
 
-    redis_url = os.getenv("UPSTASH_REDIS_REST_URL", "") or os.getenv("REDIS_URL", "")
+    redis_client = None
+    redis_url = os.getenv("UPSTASH_REDIS_REST_URL", "")
     redis_token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
     if redis_url and redis_token and redis_url.startswith("https://"):
         from urllib.parse import urlparse
-
         parsed = urlparse(redis_url)
-        redis_url = f"https://default:{redis_token}@{parsed.netloc}"
-    redis_client = await create_redis_client(redis_url or None)
+        combined = f"https://default:{redis_token}@{parsed.netloc}"
+        redis_client = await create_redis_client(combined)
+    else:
+        logger.info("Upstash not configured — running without cache")
 
     gateway = LLMGateway(
         groq_api_key=os.getenv("GROQ_API_KEY", ""),
