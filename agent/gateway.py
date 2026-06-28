@@ -3,9 +3,9 @@ from __future__ import annotations
 LLM Gateway: Groq (primary) → Gemini 2.5 Flash (fallback).
 
 Features:
-- Exponential backoff on 429: delays [1s, 4s, 16s] with ±20% jitter
+- Exponential backoff on 429/5xx: 4 total attempts with delays [1s, 4s, 16s] + ±20% jitter
 - Falls back to Gemini when Groq is exhausted
-- Redis response cache (TTL 1hr, SHA256 key on model+messages+temperature)
+- Redis response cache (TTL 1hr, SHA256 key on model+messages+temperature+max_tokens+tools)
 - Provider tagging on every response for audit logging
 - OpenAI-format tool calling passed through unchanged to both providers
 """
@@ -16,11 +16,9 @@ import logging
 import random
 from typing import Any
 
-from openai import AsyncOpenAI, RateLimitError, APIStatusError, NotGiven
+from openai import AsyncOpenAI, RateLimitError, APIStatusError
 
 logger = logging.getLogger(__name__)
-
-NOT_GIVEN = NotGiven()
 
 
 class GatewayExhaustedError(Exception):
@@ -76,7 +74,7 @@ class LLMGateway:
             GatewayExhaustedError: if both Groq and Gemini fail.
         """
         # Cache check
-        cache_key = self._cache_key(model, messages, temperature)
+        cache_key = self._cache_key(model, messages, temperature, max_tokens, tools)
         if cache and self._redis:
             try:
                 cached = await self._redis.get(cache_key)
@@ -119,10 +117,21 @@ class LLMGateway:
 
         return result
 
-    def _cache_key(self, model: str, messages: list, temperature: float) -> str:
-        """SHA256-based cache key."""
+    def _cache_key(
+        self, model: str, messages: list, temperature: float, max_tokens: int, tools: list | None
+    ) -> str:
+        """SHA256-based cache key — includes max_tokens and tools to avoid collisions."""
+        tools_hash = hashlib.sha256(
+            json.dumps(tools or [], sort_keys=True).encode()
+        ).hexdigest()[:16]
         payload = json.dumps(
-            {"model": model, "messages": messages, "temperature": temperature},
+            {
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "tools_hash": tools_hash,
+            },
             sort_keys=True,
         )
         return "llm:" + hashlib.sha256(payload.encode()).hexdigest()[:32]
@@ -137,25 +146,34 @@ class LLMGateway:
         tools: list | None,
         provider_name: str,
     ) -> dict[str, Any]:
-        """Call a provider with exponential backoff on 429/5xx."""
+        """Call a provider with exponential backoff on 429/5xx.
+
+        Makes up to len(RETRY_DELAYS)+1 total attempts. Delays [1s, 4s, 16s] ±20% jitter
+        are applied between consecutive failed attempts, so all three delays are used.
+        """
         last_exc: Exception | None = None
-        for i, delay in enumerate(self.RETRY_DELAYS):
+        max_attempts = len(self.RETRY_DELAYS) + 1
+        for attempt in range(max_attempts):
             try:
                 return await self._call_provider(client, model, messages, temperature, max_tokens, tools)
             except RateLimitError as exc:
                 last_exc = exc
-                if i < len(self.RETRY_DELAYS) - 1:
-                    jitter = delay * random.uniform(-0.2, 0.2)
-                    wait = max(0.1, delay + jitter)
-                    logger.warning("%s 429, retry %d/%d in %.1fs", provider_name, i + 1, len(self.RETRY_DELAYS), wait)
-                    await asyncio.sleep(wait)
             except APIStatusError as exc:
-                if exc.status_code >= 500 and i == 0:
+                if exc.status_code >= 500:
                     last_exc = exc
-                    logger.warning("%s 5xx (%d), retrying once", provider_name, exc.status_code)
-                    await asyncio.sleep(1.0)
-                    continue
-                raise
+                else:
+                    raise
+
+            if attempt < len(self.RETRY_DELAYS):
+                delay = self.RETRY_DELAYS[attempt]
+                jitter = delay * random.uniform(-0.2, 0.2)
+                wait = max(0.1, delay + jitter)
+                logger.warning(
+                    "%s error, retry %d/%d in %.1fs",
+                    provider_name, attempt + 1, max_attempts - 1, wait,
+                )
+                await asyncio.sleep(wait)
+
         raise last_exc  # type: ignore[misc]
 
     async def _call_provider(

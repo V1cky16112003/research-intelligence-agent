@@ -3,8 +3,10 @@ from __future__ import annotations
 Agent tools: RAG retrieval, SQL analytics, web search.
 Each tool is an async function that accepts a string input and returns a string result.
 """
+import asyncio
 import json
 import logging
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -95,14 +97,19 @@ async def web_search_tool(query: str) -> str:
     """
     try:
         from duckduckgo_search import DDGS
-        results = []
-        with DDGS() as ddgs:
-            for r in ddgs.text(query, max_results=5):
-                results.append({
-                    "title": r.get("title", ""),
-                    "url": r.get("href", ""),
-                    "snippet": r.get("body", ""),
-                })
+
+        def _sync_search() -> list:
+            with DDGS() as ddgs:
+                return [
+                    {
+                        "title": r.get("title", ""),
+                        "url": r.get("href", ""),
+                        "snippet": r.get("body", ""),
+                    }
+                    for r in ddgs.text(query, max_results=5)
+                ]
+
+        results = await asyncio.to_thread(_sync_search)
         return json.dumps({
             "tool": "web_search",
             "query": query,
@@ -166,7 +173,7 @@ TOOL_DEFINITIONS = [
 ]
 
 # Dispatch map: tool name → async function
-TOOL_DISPATCH: dict[str, callable] = {
+TOOL_DISPATCH: dict[str, Callable] = {
     "rag_retrieval": rag_retrieval_tool,
     "sql_analytics": sql_analytics_tool,
     "web_search": web_search_tool,

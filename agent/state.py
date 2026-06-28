@@ -24,6 +24,7 @@ class AgentState(TypedDict):
     # Critique
     critique: str | None
     retry_count: int
+    refined_query: str | None   # Critic's suggested re-retrieval query on RETRY
 
     # Output
     draft_answer: str | None

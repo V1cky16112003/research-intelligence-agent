@@ -1,10 +1,14 @@
 from __future__ import annotations
 """
-LangGraph state machine: Planner → Executor → Critic → Reporter.
+LangGraph state machine: Planner → Executor → Reporter → Critic.
 
 Graph flow:
-  START → planner → executor → critic → reporter → END
-                      ↑___________| (if RETRY and retry_count < MAX_RETRIES)
+  START → planner → executor → reporter(draft) → critic → ┬─ RETRY → executor
+                                   ↑_________________________| └─ PASS  → END
+
+Reporter writes a real draft before Critic, so Critic evaluates the actual answer
+against context. On RETRY, the Critic sets refined_query and the executor re-retrieves
+with a better query before re-drafting.
 """
 import logging
 import os
@@ -18,13 +22,13 @@ logger = logging.getLogger(__name__)
 
 
 def _should_retry(state: dict) -> str:
-    """Conditional edge: retry execution or proceed to reporter."""
+    """Conditional edge: re-execute with refined query, or finish."""
     verdict = state.get("_critic_verdict", "PASS")
     retry_count = state.get("retry_count", 0)
     if verdict == "RETRY" and retry_count < MAX_RETRIES:
         logger.info("Critic says RETRY (attempt %d/%d)", retry_count, MAX_RETRIES)
         return "executor"
-    return "reporter"
+    return "end"
 
 
 def build_graph(checkpointer=None):
@@ -38,13 +42,13 @@ def build_graph(checkpointer=None):
 
     workflow.set_entry_point("planner")
     workflow.add_edge("planner", "executor")
-    workflow.add_edge("executor", "critic")
+    workflow.add_edge("executor", "reporter")
+    workflow.add_edge("reporter", "critic")
     workflow.add_conditional_edges(
         "critic",
         _should_retry,
-        {"executor": "executor", "reporter": "reporter"},
+        {"executor": "executor", "end": END},
     )
-    workflow.add_edge("reporter", END)
 
     return workflow.compile(checkpointer=checkpointer)
 
@@ -94,6 +98,7 @@ async def run_agent(
         "sql_results": [],
         "critique": None,
         "retry_count": 0,
+        "refined_query": None,
         "draft_answer": None,
         "final_report": None,
         "citations": [],
