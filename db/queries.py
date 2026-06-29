@@ -4,6 +4,7 @@ Analytical SQL queries and CRUD operations.
 All functions accept a psycopg v3 AsyncConnection.
 """
 import logging
+import re
 from typing import Any
 
 import psycopg
@@ -59,8 +60,8 @@ async def insert_chunks_batch(conn: psycopg.AsyncConnection, chunks: list[dict[s
     await _register_vector(conn)
 
     sql = """
-        INSERT INTO chunks (paper_id, section_title, chunk_index, content, token_count, embedding)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO chunks (paper_id, section_title, chunk_index, content, context, token_count, embedding)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
     """
     params = [
         (
@@ -68,6 +69,7 @@ async def insert_chunks_batch(conn: psycopg.AsyncConnection, chunks: list[dict[s
             c.get("section_title", "abstract"),
             c.get("chunk_index", 0),
             c["content"],
+            c.get("context") or None,  # store NULL rather than empty string
             c.get("token_count"),
             c.get("embedding"),
         )
@@ -126,6 +128,151 @@ async def search_similar_chunks(
             LIMIT %s
         """
         params = (query_embedding, query_embedding, k)
+
+    async with conn.cursor() as cur:
+        await cur.execute(sql, params)
+        col_names = [d[0] for d in cur.description]
+        rows = await cur.fetchall()
+        return [dict(zip(col_names, row)) for row in rows]
+
+
+def _to_tsquery_safe(query: str) -> str:
+    """Convert a free-text query to a safe plainto_tsquery-style string.
+
+    Strips punctuation so the string is safe to pass to plainto_tsquery().
+    We use plainto_tsquery (not to_tsquery) in the SQL, so the string
+    doesn't need special operators — just cleaned words.
+    """
+    words = re.sub(r"[^\w\s]", "", query).split()
+    return " ".join(words)
+
+
+async def search_similar_chunks_hybrid(
+    conn: psycopg.AsyncConnection,
+    query_embedding: list[float],
+    query_text: str,
+    k: int = 8,
+    categories: list[str] | None = None,
+    rrf_k: int = 60,
+    candidate_multiplier: int = 2,
+) -> list[dict[str, Any]]:
+    """Hybrid retrieval: dense vector (HNSW) + BM25 (tsvector) fused with RRF.
+
+    Fetches k * candidate_multiplier candidates from each leg, then merges
+    via Reciprocal Rank Fusion and returns the top k results.
+
+    Falls back to pure vector search if content_tsv column is absent
+    (i.e. migration 001 hasn't been applied yet).
+    """
+    await _register_vector(conn)
+
+    candidates = k * candidate_multiplier
+    bm25_text = _to_tsquery_safe(query_text)
+
+    # Check whether the content_tsv column exists (graceful degradation)
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name='chunks' AND column_name='content_tsv' LIMIT 1"
+        )
+        has_tsv = (await cur.fetchone()) is not None
+
+    if not has_tsv or not bm25_text.strip():
+        logger.debug("Falling back to pure vector search (no tsvector column or empty query)")
+        return await search_similar_chunks(conn, query_embedding, k=k, categories=categories)
+
+    # Build params list dynamically to handle optional category filter
+    # Legs: vector (2 uses of embedding + optional cat), bm25 (optional cat), final LIMIT
+    if categories:
+        sql = """
+            WITH vector_ranked AS (
+                SELECT c.id,
+                       ROW_NUMBER() OVER (ORDER BY c.embedding <=> %s::vector) AS rank
+                FROM chunks c
+                JOIN papers p ON c.paper_id = p.id
+                WHERE p.categories && %s::text[]
+                ORDER BY c.embedding <=> %s::vector
+                LIMIT %s
+            ),
+            bm25_ranked AS (
+                SELECT c.id,
+                       ROW_NUMBER() OVER (ORDER BY ts_rank(c.content_tsv, q) DESC) AS rank
+                FROM chunks c
+                JOIN papers p ON c.paper_id = p.id,
+                     plainto_tsquery('english', %s) q
+                WHERE c.content_tsv @@ q
+                  AND p.categories && %s::text[]
+                ORDER BY ts_rank(c.content_tsv, q) DESC
+                LIMIT %s
+            ),
+            rrf AS (
+                SELECT id, SUM(1.0 / (%s + rank)) AS score
+                FROM (
+                    SELECT id, rank FROM vector_ranked
+                    UNION ALL
+                    SELECT id, rank FROM bm25_ranked
+                ) combined
+                GROUP BY id
+                ORDER BY score DESC
+                LIMIT %s
+            )
+            SELECT c.id, c.content, c.context, c.paper_id, c.section_title, c.chunk_index,
+                   rrf.score AS similarity_score,
+                   p.arxiv_id, p.title, p.authors, p.categories
+            FROM rrf
+            JOIN chunks c ON rrf.id = c.id
+            JOIN papers p ON c.paper_id = p.id
+            ORDER BY rrf.score DESC
+        """
+        params = (
+            query_embedding, categories, query_embedding, candidates,  # vector leg
+            bm25_text, categories, candidates,                          # bm25 leg
+            rrf_k, k,                                                   # rrf + final limit
+        )
+    else:
+        sql = """
+            WITH vector_ranked AS (
+                SELECT c.id,
+                       ROW_NUMBER() OVER (ORDER BY c.embedding <=> %s::vector) AS rank
+                FROM chunks c
+                JOIN papers p ON c.paper_id = p.id
+                ORDER BY c.embedding <=> %s::vector
+                LIMIT %s
+            ),
+            bm25_ranked AS (
+                SELECT c.id,
+                       ROW_NUMBER() OVER (ORDER BY ts_rank(c.content_tsv, q) DESC) AS rank
+                FROM chunks c
+                JOIN papers p ON c.paper_id = p.id,
+                     plainto_tsquery('english', %s) q
+                WHERE c.content_tsv @@ q
+                ORDER BY ts_rank(c.content_tsv, q) DESC
+                LIMIT %s
+            ),
+            rrf AS (
+                SELECT id, SUM(1.0 / (%s + rank)) AS score
+                FROM (
+                    SELECT id, rank FROM vector_ranked
+                    UNION ALL
+                    SELECT id, rank FROM bm25_ranked
+                ) combined
+                GROUP BY id
+                ORDER BY score DESC
+                LIMIT %s
+            )
+            SELECT c.id, c.content, c.context, c.paper_id, c.section_title, c.chunk_index,
+                   rrf.score AS similarity_score,
+                   p.arxiv_id, p.title, p.authors, p.categories
+            FROM rrf
+            JOIN chunks c ON rrf.id = c.id
+            JOIN papers p ON c.paper_id = p.id
+            ORDER BY rrf.score DESC
+        """
+        params = (
+            query_embedding, query_embedding, candidates,  # vector leg
+            bm25_text, candidates,                          # bm25 leg
+            rrf_k, k,                                       # rrf + final limit
+        )
 
     async with conn.cursor() as cur:
         await cur.execute(sql, params)

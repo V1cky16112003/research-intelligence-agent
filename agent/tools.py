@@ -13,7 +13,13 @@ logger = logging.getLogger(__name__)
 
 async def rag_retrieval_tool(query: str, categories: str | None = None) -> str:
     """
-    Retrieve relevant paper chunks from pgvector using semantic similarity.
+    Retrieve relevant paper chunks using hybrid search (dense vector + BM25) and LLM reranking.
+
+    Pipeline:
+      1. Embed query with nomic-embed (search_query: prefix)
+      2. Run hybrid RRF search: HNSW cosine + tsvector BM25 (falls back to pure vector if
+         content_tsv column not present, i.e. migration 001 not yet applied)
+      3. Rerank top-16 candidates with LLM gateway → return top 8
 
     Args:
         query: The search query
@@ -24,19 +30,26 @@ async def rag_retrieval_tool(query: str, categories: str | None = None) -> str:
     """
     from ingestion.embed import embed_query
     from db.connection import get_connection
-    from db.queries import search_similar_chunks
+    from db.queries import search_similar_chunks_hybrid
+    from agent.registry import get_gateway
+    from agent.reranker import rerank
 
     category_list = [c.strip() for c in categories.split(",")] if categories else None
 
     try:
         query_embedding = embed_query(query)
         async with get_connection() as conn:
-            results = await search_similar_chunks(
+            candidates = await search_similar_chunks_hybrid(
                 conn,
                 query_embedding=query_embedding,
-                k=8,
+                query_text=query,
+                k=16,           # fetch 16 for reranker to choose from
                 categories=category_list,
             )
+
+        gateway = get_gateway()
+        results = await rerank(gateway, query=query, candidates=candidates, top_k=8)
+
         return json.dumps({
             "tool": "rag_retrieval",
             "query": query,

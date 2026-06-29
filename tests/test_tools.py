@@ -8,12 +8,16 @@ from agent.tools import TOOL_DISPATCH, TOOL_DEFINITIONS
 
 @pytest.mark.asyncio
 async def test_rag_retrieval_returns_json():
-    # Tools use lazy imports inside function bodies — patch at source modules
+    # Tools use lazy imports inside function bodies — patch at source modules.
+    # Hybrid retrieval calls search_similar_chunks_hybrid + rerank + get_gateway.
     mock_results = [{"content": "test chunk", "arxiv_id": "2024.0001", "title": "Test Paper"}]
+    mock_gateway = MagicMock()
     with (
         patch("ingestion.embed.embed_query", return_value=[0.1] * 768),
         patch("db.connection.get_connection") as mock_conn_cm,
-        patch("db.queries.search_similar_chunks", new_callable=AsyncMock, return_value=mock_results),
+        patch("db.queries.search_similar_chunks_hybrid", new_callable=AsyncMock, return_value=mock_results),
+        patch("agent.registry.get_gateway", return_value=mock_gateway),
+        patch("agent.reranker.rerank", new_callable=AsyncMock, return_value=mock_results),
     ):
         mock_conn = AsyncMock()
         mock_conn_cm.return_value.__aenter__ = AsyncMock(return_value=mock_conn)

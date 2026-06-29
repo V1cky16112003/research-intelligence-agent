@@ -26,6 +26,7 @@ class Chunk:
     chunk_index: int
     content: str
     token_count: int
+    context: str = ""  # LLM-generated situating blurb; prepended before embedding
 
 
 _model = None  # Lazy-loaded
@@ -95,7 +96,10 @@ def embed_chunks(chunks: list[Chunk], batch_size: int = 256) -> list[tuple[Chunk
     if not chunks:
         return []
     model = get_model()
-    texts = [f"search_document: {c.content}" for c in chunks]
+    texts = [
+        f"search_document: {c.context}\n\n{c.content}" if c.context else f"search_document: {c.content}"
+        for c in chunks
+    ]
     embeddings = model.encode(texts, normalize_embeddings=True, show_progress_bar=False, batch_size=batch_size)
     return list(zip(chunks, embeddings.tolist()))
 

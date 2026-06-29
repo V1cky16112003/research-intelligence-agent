@@ -21,6 +21,10 @@ CREATE TABLE IF NOT EXISTS chunks (
     section_title TEXT NOT NULL DEFAULT 'abstract',
     chunk_index   INT  NOT NULL DEFAULT 0,
     content       TEXT NOT NULL,
+    context       TEXT,                          -- LLM-generated situating blurb (NULL = not contextualised)
+    content_tsv   TSVECTOR GENERATED ALWAYS AS (
+                      to_tsvector('english', coalesce(context, '') || ' ' || content)
+                  ) STORED,                      -- for BM25 full-text search
     token_count   INT,
     embedding     vector(768),
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -47,6 +51,9 @@ CREATE TABLE IF NOT EXISTS query_audit_log (
 CREATE INDEX IF NOT EXISTS chunks_embedding_hnsw
     ON chunks USING hnsw (embedding vector_cosine_ops)
     WITH (m = 16, ef_construction = 64);
+
+-- GIN index for BM25 full-text search
+CREATE INDEX IF NOT EXISTS chunks_content_tsv_gin ON chunks USING gin(content_tsv);
 
 -- Supporting btree/GIN indexes
 CREATE INDEX IF NOT EXISTS papers_categories_gin ON papers USING GIN (categories);

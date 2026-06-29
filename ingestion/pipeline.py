@@ -5,30 +5,68 @@ End-to-end ingestion pipeline.
 Usage:
     python -m ingestion.pipeline --limit 50000 --batch-size 500
 
+    # With contextual retrieval (LLM-generated blurbs):
+    GROQ_API_KEY=... GEMINI_API_KEY=... python -m ingestion.pipeline --limit 10000 --contextual
+
 This script:
 1. Streams papers from ArxivAbstractConnector (already in DB via loader.py)
-2. Chunks each abstract
-3. Embeds chunks in large batches (GPU-efficient)
-4. Bulk-inserts into chunks table with embeddings
+2. Optionally generates a contextual blurb per paper via LLMGateway
+3. Chunks each abstract
+4. Embeds chunks in large batches (GPU-efficient), prepending the blurb when present
+5. Bulk-inserts into chunks table with embeddings and context
 """
 import argparse
 import asyncio
 import logging
+import os
 import time
 
 logger = logging.getLogger(__name__)
 
 
-async def run_pipeline(limit: int = 50_000, batch_size: int = 500) -> dict:
+async def run_pipeline(
+    limit: int = 50_000,
+    batch_size: int = 500,
+    groq_api_key: str | None = None,
+    gemini_api_key: str | None = None,
+    contextual: bool = False,
+) -> dict:
     """
     Run the full ingestion pipeline.
     Accumulates `batch_size` papers before embedding to maximise GPU utilisation.
-    Returns stats dict: {total_docs, total_chunks, elapsed_seconds}
+
+    Args:
+        limit: Maximum number of papers to process.
+        batch_size: Papers buffered before a GPU embed+insert flush.
+        groq_api_key: Groq API key for context generation (falls back to env var).
+        gemini_api_key: Gemini API key (falls back to env var).
+        contextual: If True, generate LLM context blurbs for each paper.
+
+    Returns:
+        Stats dict: {total_docs, total_chunks, elapsed_seconds}
     """
     from db.connection import init_pool, get_connection
     from db.queries import insert_chunks_batch
     from ingestion.connector import ArxivAbstractConnector
     from ingestion.embed import chunk_text, embed_chunks
+
+    # Resolve API keys from args or environment
+    groq_key = groq_api_key or os.getenv("GROQ_API_KEY", "")
+    gemini_key = gemini_api_key or os.getenv("GEMINI_API_KEY", "")
+
+    # Set up contextual retrieval gateway if requested
+    gateway = None
+    generate_context_fn = None
+    if contextual:
+        if not groq_key or not gemini_key:
+            raise ValueError(
+                "GROQ_API_KEY and GEMINI_API_KEY must be set to use --contextual"
+            )
+        from agent.gateway import LLMGateway
+        from ingestion.context_generator import generate_context
+        gateway = LLMGateway(groq_api_key=groq_key, gemini_api_key=gemini_key)
+        generate_context_fn = generate_context
+        logger.info("Contextual retrieval enabled — will generate LLM blurbs per paper")
 
     await init_pool()
 
@@ -37,17 +75,26 @@ async def run_pipeline(limit: int = 50_000, batch_size: int = 500) -> dict:
     total_chunks = 0
     start = time.time()
 
-    # Buffer: list of (paper_id, [Chunk, ...])
-    buffer: list[tuple[int, list]] = []
+    # Buffer: list of (paper_id, title, abstract, [Chunk, ...])
+    buffer: list[tuple[int, str, str, list]] = []
 
-    async def flush(buf: list[tuple[int, list]]) -> int:
-        """Embed and insert one buffer of (paper_id, chunks) pairs."""
+    async def flush(buf: list[tuple[int, str, str, list]]) -> int:
+        """Embed and insert one buffer of (paper_id, title, abstract, chunks) tuples."""
         if not buf:
             return 0
-        # Flatten all chunks while tracking which paper each belongs to
+
+        # Generate context blurbs (sequential — one LLM call per paper)
+        if generate_context_fn and gateway:
+            for pid, title, abstract, chunks in buf:
+                for chunk in chunks:
+                    chunk.context = await generate_context_fn(
+                        gateway, title=title, abstract=abstract, chunk=chunk.content
+                    )
+
+        # Flatten all chunks
         paper_ids_flat = []
         chunks_flat = []
-        for pid, chunks in buf:
+        for pid, _title, _abstract, chunks in buf:
             for c in chunks:
                 paper_ids_flat.append(pid)
                 chunks_flat.append(c)
@@ -60,6 +107,7 @@ async def run_pipeline(limit: int = 50_000, batch_size: int = 500) -> dict:
                 "section_title": chunk.section_title,
                 "chunk_index": chunk.chunk_index,
                 "content": chunk.content,
+                "context": chunk.context,
                 "token_count": chunk.token_count,
                 "embedding": emb,
             }
@@ -78,7 +126,9 @@ async def run_pipeline(limit: int = 50_000, batch_size: int = 500) -> dict:
             continue
 
         paper_id = doc.metadata["paper_id"]
-        buffer.append((paper_id, chunks))
+        title = doc.metadata.get("title", "")
+        abstract = doc.content  # connector yields the abstract as doc.content
+        buffer.append((paper_id, title, abstract, chunks))
         total_docs += 1
 
         if len(buffer) >= batch_size:
@@ -106,10 +156,16 @@ def parse_args():
     p = argparse.ArgumentParser(description="Run the embedding ingestion pipeline")
     p.add_argument("--limit", type=int, default=50_000)
     p.add_argument("--batch-size", type=int, default=500)
+    p.add_argument(
+        "--contextual",
+        action="store_true",
+        default=False,
+        help="Generate LLM context blurbs for each chunk (requires GROQ_API_KEY + GEMINI_API_KEY)",
+    )
     return p.parse_args()
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = parse_args()
-    asyncio.run(run_pipeline(limit=args.limit, batch_size=args.batch_size))
+    asyncio.run(run_pipeline(limit=args.limit, batch_size=args.batch_size, contextual=args.contextual))
