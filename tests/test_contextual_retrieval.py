@@ -1,7 +1,9 @@
 """
-Tests for contextual retrieval components:
-  - ingestion/context_generator.py
-  - ingestion/embed.py (Chunk.context field + embed_chunks prefix)
+Tests for hybrid retrieval components:
+  - ingestion/embed.py (Chunk.context field + embed_chunks prefix — context is
+    always empty now that Stage 2b LLM blurb generation has been removed, but
+    embed_chunks must still handle a populated context field for forward
+    compatibility with the chunks.context column)
   - agent/reranker.py
   - db/queries.py (search_similar_chunks_hybrid SQL structure)
 """
@@ -32,51 +34,6 @@ def _make_chunk(content: str, context: str = "") -> "Chunk":  # noqa: F821
         token_count=len(content.split()),
         context=context,
     )
-
-
-# ---------------------------------------------------------------------------
-# 1. generate_context — calls gateway with correct prompt
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_generate_context_calls_gateway():
-    """generate_context must include title, abstract, and chunk in the prompt."""
-    from ingestion.context_generator import generate_context
-
-    gateway = _make_gateway("This chunk discusses attention mechanisms.")
-
-    result = await generate_context(
-        gateway,
-        title="Attention Is All You Need",
-        abstract="We propose a new model architecture...",
-        chunk="The encoder maps an input sequence of symbol representations...",
-    )
-
-    assert result == "This chunk discusses attention mechanisms."
-    gateway.chat.assert_called_once()
-    call_messages = gateway.chat.call_args[1]["messages"]
-    prompt_text = call_messages[0]["content"]
-    assert "Attention Is All You Need" in prompt_text
-    assert "We propose a new model architecture" in prompt_text
-    assert "encoder maps an input sequence" in prompt_text
-
-
-@pytest.mark.asyncio
-async def test_generate_context_returns_empty_on_gateway_failure():
-    """generate_context must return '' when the gateway raises, not propagate."""
-    from ingestion.context_generator import generate_context
-
-    gateway = MagicMock()
-    gateway.chat = AsyncMock(side_effect=RuntimeError("gateway down"))
-
-    result = await generate_context(
-        gateway,
-        title="Paper",
-        abstract="Abstract text.",
-        chunk="Chunk text.",
-    )
-
-    assert result == ""
 
 
 # ---------------------------------------------------------------------------
