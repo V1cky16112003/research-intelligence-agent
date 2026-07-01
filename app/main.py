@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     dagshub_repo: str = ""
     embed_model: str = "nomic-ai/nomic-embed-text-v2-moe"
     embed_dim: int = 768
+    neo4j_uri: str = ""
+    neo4j_user: str = ""
+    neo4j_password: str = ""
 
     def get_redis_url(self) -> str:
         """Return a single Redis URL, combining Upstash vars if needed."""
@@ -76,6 +79,14 @@ async def lifespan(app: FastAPI):
     from agent.graph import init_graph
     await init_graph()
 
+    # Neo4j graph driver (optional — graph_query tool degrades gracefully if unset)
+    if settings.neo4j_uri:
+        from graph.neo4j_client import get_driver
+        get_driver(uri=settings.neo4j_uri, user=settings.neo4j_user, password=settings.neo4j_password)
+        logger.info("Neo4j graph driver ready")
+    else:
+        logger.warning("NEO4J_URI not set — graph_query tool will error gracefully if invoked")
+
     logger.info("Research agent ready")
     yield
 
@@ -83,6 +94,10 @@ async def lifespan(app: FastAPI):
     if settings.database_url:
         from db.connection import close_pool
         await close_pool()
+
+    if settings.neo4j_uri:
+        from graph.neo4j_client import close_driver
+        await close_driver()
 
 
 app = FastAPI(title="Research Intelligence Agent", version="1.0.0", lifespan=lifespan)
