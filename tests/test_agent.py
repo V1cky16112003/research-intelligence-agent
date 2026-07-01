@@ -335,7 +335,7 @@ async def test_executor_retry_path_merges_chunks():
 def test_cache_key_varies_with_max_tokens():
     """Gateway cache key differs when max_tokens changes."""
     from agent.gateway import LLMGateway
-    gw = LLMGateway(groq_api_key="x", gemini_api_key="y")
+    gw = LLMGateway(groq_api_key="x", nvidia_api_key="z", gemini_api_key="y")
     messages = [{"role": "user", "content": "hello"}]
     key1 = gw._cache_key("model", messages, 0.1, 512, None)
     key2 = gw._cache_key("model", messages, 0.1, 1024, None)
@@ -345,7 +345,7 @@ def test_cache_key_varies_with_max_tokens():
 def test_cache_key_varies_with_tools():
     """Gateway cache key differs when tools list changes."""
     from agent.gateway import LLMGateway
-    gw = LLMGateway(groq_api_key="x", gemini_api_key="y")
+    gw = LLMGateway(groq_api_key="x", nvidia_api_key="z", gemini_api_key="y")
     messages = [{"role": "user", "content": "hello"}]
     key_no_tools = gw._cache_key("model", messages, 0.1, 512, None)
     key_with_tools = gw._cache_key("model", messages, 0.1, 512, [{"type": "function"}])

@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     upstash_redis_rest_url: str = ""
     upstash_redis_rest_token: str = ""
     groq_api_key: str = ""
+    nvidia_nim_api_key: str = ""
     gemini_api_key: str = ""
     dagshub_token: str = ""
     dagshub_repo: str = ""
@@ -65,6 +66,7 @@ async def lifespan(app: FastAPI):
     from agent.registry import set_gateway
     gateway = LLMGateway(
         groq_api_key=settings.groq_api_key,
+        nvidia_api_key=settings.nvidia_nim_api_key,
         gemini_api_key=settings.gemini_api_key,
         redis_client=redis_client,
     )

@@ -1,13 +1,13 @@
 from __future__ import annotations
 """
-LLM Gateway: Groq (primary) → Gemini 2.5 Flash (fallback).
+LLM Gateway: Groq (primary) → NVIDIA NIM (2nd fallback) → Gemini 2.5 Flash (3rd fallback).
 
 Features:
 - Exponential backoff on 429/5xx: 4 total attempts with delays [1s, 4s, 16s] + ±20% jitter
-- Falls back to Gemini when Groq is exhausted
+- Falls back Groq → NVIDIA NIM → Gemini as each tier is exhausted
 - Redis response cache (TTL 1hr, SHA256 key on model+messages+temperature+max_tokens+tools)
 - Provider tagging on every response for audit logging
-- OpenAI-format tool calling passed through unchanged to both providers
+- OpenAI-format tool calling passed through unchanged to all three providers
 """
 import asyncio
 import hashlib
@@ -26,21 +26,27 @@ class GatewayExhaustedError(Exception):
 
 
 class LLMGateway:
-    """Routes LLM calls: Groq (primary) → Gemini 2.5 Flash (fallback)."""
+    """Routes LLM calls: Groq (primary) → NVIDIA NIM (fallback) → Gemini 2.5 Flash (fallback)."""
 
     GROQ_MODEL = "llama-3.3-70b-versatile"
+    NIM_MODEL = "meta/llama-3.1-70b-instruct"
     GEMINI_MODEL = "gemini-2.5-flash"
     RETRY_DELAYS = [1.0, 4.0, 16.0]
 
     def __init__(
         self,
         groq_api_key: str,
+        nvidia_api_key: str,
         gemini_api_key: str,
         redis_client=None,
     ) -> None:
         self._groq = AsyncOpenAI(
             api_key=groq_api_key,
             base_url="https://api.groq.com/openai/v1",
+        )
+        self._nim = AsyncOpenAI(
+            api_key=nvidia_api_key,
+            base_url="https://integrate.api.nvidia.com/v1",
         )
         self._gemini = AsyncOpenAI(
             api_key=gemini_api_key,
@@ -58,20 +64,20 @@ class LLMGateway:
         cache: bool = True,
     ) -> dict[str, Any]:
         """
-        Call the LLM with automatic fallback.
+        Call the LLM with automatic 3-tier fallback.
 
         Returns:
             {
                 "content": str | None,
                 "tool_calls": list | None,
-                "provider": "groq" | "gemini",
+                "provider": "groq" | "nvidia_nim" | "gemini",
                 "model": str,
                 "tokens_in": int,
                 "tokens_out": int,
                 "cached": bool,
             }
         Raises:
-            GatewayExhaustedError: if both Groq and Gemini fail.
+            GatewayExhaustedError: if Groq, NVIDIA NIM, and Gemini all fail.
         """
         # Cache check
         cache_key = self._cache_key(model, messages, temperature, max_tokens, tools)
@@ -85,26 +91,39 @@ class LLMGateway:
             except Exception:
                 pass  # Cache miss on error — proceed
 
-        # Try Groq
         result = None
+        groq_exc = nim_exc = gemini_exc = None
+
         try:
             result = await self._with_retry(
                 self._groq, model, messages, temperature, max_tokens, tools, "groq"
             )
             result["provider"] = "groq"
             result["model"] = model
-        except Exception as groq_exc:
-            logger.warning("Groq exhausted (%s), falling back to Gemini", groq_exc)
+        except Exception as exc:
+            groq_exc = exc
+            logger.warning("Groq exhausted (%s), falling back to NVIDIA NIM", exc)
             try:
                 result = await self._with_retry(
-                    self._gemini, self.GEMINI_MODEL, messages, temperature, max_tokens, tools, "gemini"
+                    self._nim, self.NIM_MODEL, messages, temperature, max_tokens, tools, "nvidia_nim"
                 )
-                result["provider"] = "gemini"
-                result["model"] = self.GEMINI_MODEL
-            except Exception as gemini_exc:
-                raise GatewayExhaustedError(
-                    f"Both providers exhausted. Groq: {groq_exc}. Gemini: {gemini_exc}"
-                ) from gemini_exc
+                result["provider"] = "nvidia_nim"
+                result["model"] = self.NIM_MODEL
+            except Exception as exc2:
+                nim_exc = exc2
+                logger.warning("NVIDIA NIM exhausted (%s), falling back to Gemini", exc2)
+                try:
+                    result = await self._with_retry(
+                        self._gemini, self.GEMINI_MODEL, messages, temperature, max_tokens, tools, "gemini"
+                    )
+                    result["provider"] = "gemini"
+                    result["model"] = self.GEMINI_MODEL
+                except Exception as exc3:
+                    gemini_exc = exc3
+                    raise GatewayExhaustedError(
+                        f"All providers exhausted. Groq: {groq_exc}. "
+                        f"NVIDIA NIM: {nim_exc}. Gemini: {gemini_exc}"
+                    ) from gemini_exc
 
         result["cached"] = False
 

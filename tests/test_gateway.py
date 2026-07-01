@@ -19,7 +19,7 @@ def _make_response(content: str = "hello", provider: str = "groq") -> dict:
 @pytest.mark.asyncio
 async def test_groq_success():
     """Groq succeeds on first try — returns provider=groq, cached=False."""
-    gw = LLMGateway(groq_api_key="fake", gemini_api_key="fake")
+    gw = LLMGateway(groq_api_key="fake", nvidia_api_key="fake", gemini_api_key="fake")
     gw._with_retry = AsyncMock(return_value=_make_response())
     result = await gw.chat([{"role": "user", "content": "hi"}], cache=False)
     assert result["provider"] == "groq"
@@ -28,23 +28,40 @@ async def test_groq_success():
 
 
 @pytest.mark.asyncio
-async def test_groq_429_falls_back_to_gemini():
-    """Groq raises RateLimitError — gateway falls back to Gemini."""
-    gw = LLMGateway(groq_api_key="fake", gemini_api_key="fake")
+async def test_groq_and_nim_429_falls_back_to_gemini():
+    """Groq and NIM both rate-limited — gateway falls back to Gemini."""
+    gw = LLMGateway(groq_api_key="fake", nvidia_api_key="fake", gemini_api_key="fake")
 
-    call_count = 0
+    call_order = []
     async def mock_retry(client, model, messages, temperature, max_tokens, tools, provider_name):
-        nonlocal call_count
-        call_count += 1
-        if provider_name == "groq":
+        call_order.append(provider_name)
+        if provider_name in ("groq", "nvidia_nim"):
             raise RateLimitError("rate limited", response=MagicMock(status_code=429), body={})
         return _make_response("gemini answer")
 
     gw._with_retry = mock_retry
     result = await gw.chat([{"role": "user", "content": "hi"}], cache=False)
     assert result["provider"] == "gemini"
-    assert result["model"] == LLMGateway.GEMINI_MODEL
-    assert call_count == 2
+    assert call_order == ["groq", "nvidia_nim", "gemini"]
+
+
+@pytest.mark.asyncio
+async def test_groq_429_falls_back_to_nim():
+    """Groq rate-limited, NIM succeeds — gateway stops at NIM, never calls Gemini."""
+    gw = LLMGateway(groq_api_key="fake", nvidia_api_key="fake", gemini_api_key="fake")
+
+    call_order = []
+    async def mock_retry(client, model, messages, temperature, max_tokens, tools, provider_name):
+        call_order.append(provider_name)
+        if provider_name == "groq":
+            raise RateLimitError("rate limited", response=MagicMock(status_code=429), body={})
+        return _make_response("nim answer")
+
+    gw._with_retry = mock_retry
+    result = await gw.chat([{"role": "user", "content": "hi"}], cache=False)
+    assert result["provider"] == "nvidia_nim"
+    assert result["model"] == LLMGateway.NIM_MODEL
+    assert call_order == ["groq", "nvidia_nim"]
 
 
 @pytest.mark.asyncio
@@ -61,7 +78,7 @@ async def test_cache_hit():
     mock_redis = MagicMock()
     mock_redis.get = AsyncMock(return_value=cached_payload)
 
-    gw = LLMGateway(groq_api_key="fake", gemini_api_key="fake", redis_client=mock_redis)
+    gw = LLMGateway(groq_api_key="fake", nvidia_api_key="fake", gemini_api_key="fake", redis_client=mock_redis)
     gw._with_retry = AsyncMock(side_effect=AssertionError("Should not call LLM on cache hit"))
 
     result = await gw.chat([{"role": "user", "content": "hi"}], cache=True)
@@ -71,9 +88,9 @@ async def test_cache_hit():
 
 
 @pytest.mark.asyncio
-async def test_both_exhausted():
-    """Both Groq and Gemini fail — GatewayExhaustedError raised."""
-    gw = LLMGateway(groq_api_key="fake", gemini_api_key="fake")
+async def test_all_three_exhausted():
+    """Groq, NIM, and Gemini all fail — GatewayExhaustedError raised."""
+    gw = LLMGateway(groq_api_key="fake", nvidia_api_key="fake", gemini_api_key="fake")
 
     async def always_fail(client, model, messages, temperature, max_tokens, tools, provider_name):
         raise RateLimitError("rate limited", response=MagicMock(status_code=429), body={})
