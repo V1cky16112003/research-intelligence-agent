@@ -56,7 +56,7 @@ async def test_web_search_returns_json():
 
 def test_tool_definitions_valid():
     """All tool definitions have required OpenAI function-calling fields."""
-    assert len(TOOL_DEFINITIONS) == 3
+    assert len(TOOL_DEFINITIONS) == 4
     for td in TOOL_DEFINITIONS:
         assert td["type"] == "function"
         assert "name" in td["function"]
@@ -69,3 +69,101 @@ def test_tool_dispatch_matches_definitions():
     for td in TOOL_DEFINITIONS:
         name = td["function"]["name"]
         assert name in TOOL_DISPATCH, f"Tool '{name}' in TOOL_DEFINITIONS but not in TOOL_DISPATCH"
+
+
+@pytest.mark.asyncio
+async def test_graph_query_papers_by_author():
+    """query_type='papers_by_author' must run the AUTHORED_BY Cypher template and return results."""
+    from agent.tools import graph_query_tool
+
+    mock_record = {"arxiv_id": "1234.5678", "title": "Attention Is All You Need"}
+    mock_result = MagicMock()
+    mock_result.data = AsyncMock(return_value=[mock_record])
+
+    mock_session = MagicMock()
+    mock_session.run = AsyncMock(return_value=mock_result)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+
+    mock_driver = MagicMock()
+    mock_driver.session.return_value = mock_session
+
+    with patch("graph.neo4j_client.get_driver", return_value=mock_driver):
+        result_json = await graph_query_tool(query_type="papers_by_author", value="Ashish Vaswani")
+
+    result = json.loads(result_json)
+    assert result["tool"] == "graph_query"
+    assert result["count"] == 1
+    assert result["results"][0]["arxiv_id"] == "1234.5678"
+
+
+@pytest.mark.asyncio
+async def test_graph_query_papers_by_category():
+    """query_type='papers_by_category' must run the HAS_CATEGORY Cypher template."""
+    from agent.tools import graph_query_tool
+
+    mock_result = MagicMock()
+    mock_result.data = AsyncMock(return_value=[{"arxiv_id": "9999.0001", "title": "A Survey of Y"}])
+
+    mock_session = MagicMock()
+    mock_session.run = AsyncMock(return_value=mock_result)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+
+    mock_driver = MagicMock()
+    mock_driver.session.return_value = mock_session
+
+    with patch("graph.neo4j_client.get_driver", return_value=mock_driver):
+        result_json = await graph_query_tool(query_type="papers_by_category", value="cs.LG")
+
+    result = json.loads(result_json)
+    assert result["count"] == 1
+    assert result["results"][0]["title"] == "A Survey of Y"
+
+
+@pytest.mark.asyncio
+async def test_graph_query_coauthors():
+    """query_type='coauthors' must run the co-authorship Cypher template."""
+    from agent.tools import graph_query_tool
+
+    mock_result = MagicMock()
+    mock_result.data = AsyncMock(return_value=[{"name": "Noam Shazeer"}])
+
+    mock_session = MagicMock()
+    mock_session.run = AsyncMock(return_value=mock_result)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+
+    mock_driver = MagicMock()
+    mock_driver.session.return_value = mock_session
+
+    with patch("graph.neo4j_client.get_driver", return_value=mock_driver):
+        result_json = await graph_query_tool(query_type="coauthors", value="Ashish Vaswani")
+
+    result = json.loads(result_json)
+    assert result["count"] == 1
+    assert result["results"][0]["name"] == "Noam Shazeer"
+
+
+@pytest.mark.asyncio
+async def test_graph_query_unknown_type_returns_error():
+    """An unrecognized query_type must return an error, not raise or run an arbitrary query."""
+    from agent.tools import graph_query_tool
+
+    result_json = await graph_query_tool(query_type="delete_everything", value="x")
+    result = json.loads(result_json)
+    assert "error" in result
+    assert result["results"] == []
+
+
+@pytest.mark.asyncio
+async def test_graph_query_driver_error_returns_empty_results():
+    """If Neo4j is unreachable, the tool must return a graceful error, not crash the agent."""
+    from agent.tools import graph_query_tool
+
+    with patch("graph.neo4j_client.get_driver", side_effect=RuntimeError("connection refused")):
+        result_json = await graph_query_tool(query_type="papers_by_author", value="Anyone")
+
+    result = json.loads(result_json)
+    assert "error" in result
+    assert result["results"] == []

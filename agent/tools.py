@@ -134,6 +134,65 @@ async def web_search_tool(query: str) -> str:
         return json.dumps({"tool": "web_search", "error": str(e), "results": []})
 
 
+# Fixed, parameterized Cypher templates — deliberately not LLM-generated, so a
+# malformed or unbounded query can never reach the graph database.
+_GRAPH_CYPHER_TEMPLATES = {
+    "papers_by_author": (
+        "MATCH (p:Paper)-[:AUTHORED_BY]->(a:Author {name: $value}) "
+        "RETURN p.arxiv_id AS arxiv_id, p.title AS title LIMIT 20"
+    ),
+    "papers_by_category": (
+        "MATCH (p:Paper)-[:HAS_CATEGORY]->(c:Category {name: $value}) "
+        "RETURN p.arxiv_id AS arxiv_id, p.title AS title LIMIT 20"
+    ),
+    "coauthors": (
+        "MATCH (:Author {name: $value})<-[:AUTHORED_BY]-(:Paper)-[:AUTHORED_BY]->(a:Author) "
+        "WHERE a.name <> $value "
+        "RETURN DISTINCT a.name AS name LIMIT 20"
+    ),
+}
+
+
+async def graph_query_tool(query_type: str, value: str) -> str:
+    """
+    Answer relational questions (co-authorship, shared subfields) using the
+    Neo4j knowledge graph built from paper authors/categories.
+
+    Args:
+        query_type: One of: 'papers_by_author', 'papers_by_category', 'coauthors'
+        value: The author name or category code to query for.
+
+    Returns:
+        JSON string with list of results and their metadata.
+    """
+    from graph.neo4j_client import get_driver
+
+    cypher = _GRAPH_CYPHER_TEMPLATES.get(query_type)
+    if cypher is None:
+        return json.dumps({
+            "tool": "graph_query",
+            "error": f"Unknown query_type: {query_type}. Valid: {list(_GRAPH_CYPHER_TEMPLATES)}",
+            "results": [],
+        })
+
+    try:
+        driver = get_driver()
+        async with driver.session() as session:
+            result = await session.run(cypher, {"value": value})
+            records = await result.data()
+
+        return json.dumps({
+            "tool": "graph_query",
+            "query_type": query_type,
+            "value": value,
+            "results": records,
+            "count": len(records),
+        }, default=str)
+    except Exception as e:
+        logger.error("Graph query failed: %s", e)
+        return json.dumps({"tool": "graph_query", "error": str(e), "results": []})
+
+
 # OpenAI-format tool definitions for the LangGraph Planner
 TOOL_DEFINITIONS = [
     {
@@ -183,6 +242,28 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "graph_query",
+            "description": "Query the paper knowledge graph for relational questions: what else an author has written, co-authorship, or papers sharing a subfield/category. Use for questions like 'what else has this author published' or 'who are this author's collaborators', not for content/topic search (use rag_retrieval for that).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query_type": {
+                        "type": "string",
+                        "enum": ["papers_by_author", "papers_by_category", "coauthors"],
+                        "description": "papers_by_author: papers written by a given author. papers_by_category: papers in a given ArXiv category. coauthors: other authors who have co-written a paper with the given author.",
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "The author name (for papers_by_author/coauthors) or category code like 'cs.LG' (for papers_by_category)",
+                    },
+                },
+                "required": ["query_type", "value"],
+            },
+        },
+    },
 ]
 
 # Dispatch map: tool name → async function
@@ -190,4 +271,5 @@ TOOL_DISPATCH: dict[str, Callable] = {
     "rag_retrieval": rag_retrieval_tool,
     "sql_analytics": sql_analytics_tool,
     "web_search": web_search_tool,
+    "graph_query": graph_query_tool,
 }
