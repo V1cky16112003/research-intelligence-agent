@@ -38,3 +38,8 @@ _pgvector_psycopg.register_vector = AsyncMock()
 _torch = _make_module("torch")
 _st = _make_module("sentence_transformers")
 _st.SentenceTransformer = MagicMock()
+
+# --- neo4j ---
+_neo4j = _make_module("neo4j")
+_neo4j.AsyncGraphDatabase = MagicMock()
+_neo4j.AsyncDriver = MagicMock
