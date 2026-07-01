@@ -27,6 +27,12 @@ async def test_groq_success():
     assert result["content"] == "hello"
 
 
+def test_construction_with_blank_nvidia_key():
+    """nvidia_api_key defaults to '' and construction succeeds without it set."""
+    gw = LLMGateway(groq_api_key="fake", nvidia_api_key="", gemini_api_key="fake")
+    assert gw is not None
+
+
 @pytest.mark.asyncio
 async def test_groq_and_nim_429_falls_back_to_gemini():
     """Groq and NIM both rate-limited — gateway falls back to Gemini."""

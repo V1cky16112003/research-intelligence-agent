@@ -36,8 +36,8 @@ class LLMGateway:
     def __init__(
         self,
         groq_api_key: str,
-        nvidia_api_key: str,
         gemini_api_key: str,
+        nvidia_api_key: str = "",
         redis_client=None,
     ) -> None:
         self._groq = AsyncOpenAI(
@@ -45,7 +45,7 @@ class LLMGateway:
             base_url="https://api.groq.com/openai/v1",
         )
         self._nim = AsyncOpenAI(
-            api_key=nvidia_api_key,
+            api_key=nvidia_api_key or "unset",
             base_url="https://integrate.api.nvidia.com/v1",
         )
         self._gemini = AsyncOpenAI(
