@@ -15,6 +15,7 @@ import argparse
 import asyncio
 import json
 import logging
+import math
 import os
 import sys
 import types
@@ -36,6 +37,21 @@ THRESHOLDS = {
     "answer_relevancy": 0.75,
     "context_precision": 0.7,
 }
+
+
+def _mean(val) -> float:
+    """Average a RAGAS per-sample metric result, excluding NaN/None entries.
+
+    ragas 0.4.3 returns a per-sample list/Series (not a scalar), and can
+    return NaN for individual samples RAGAS couldn't score (e.g. empty
+    context/answer). `v is not None` alone does not catch NaN — a NaN
+    silently poisons the mean if included, which previously let a broken
+    retrieval pipeline report a NaN "average" instead of a hard failure.
+    """
+    if hasattr(val, "mean"):
+        val = list(val)
+    vals = [v for v in val if v is not None and not (isinstance(v, float) and math.isnan(v))]
+    return sum(vals) / len(vals) if vals else float("nan")
 
 
 def parse_args() -> argparse.Namespace:
@@ -112,9 +128,15 @@ async def run_evaluation(args: argparse.Namespace) -> dict:
 
     gateway = LLMGateway(
         groq_api_key=os.getenv("GROQ_API_KEY", ""),
+        nvidia_api_key=os.getenv("NVIDIA_NIM_API_KEY", ""),
         gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
         redis_client=redis_client,
     )
+    # rag_retrieval_tool fetches its gateway from the module-level registry
+    # (not passed as an arg) — must register it before any retrieval runs,
+    # or every call fails with "Gateway not initialized."
+    from agent.registry import set_gateway
+    set_gateway(gateway)
 
     # Collect answers + contexts
     logger.info("Running RAG pipeline on %d questions...", len(golden_set))
@@ -171,13 +193,6 @@ async def run_evaluation(args: argparse.Namespace) -> dict:
             llm=judge_llm,
             embeddings=judge_embeddings,
         )
-
-        def _mean(val) -> float:
-            # ragas 0.4.3 returns a per-sample list/Series, not a scalar
-            if hasattr(val, "mean"):
-                return float(val.mean())
-            vals = [v for v in val if v is not None]
-            return sum(vals) / len(vals) if vals else 0.0
 
         metrics = {
             "faithfulness": _mean(result["faithfulness"]),
@@ -240,7 +255,10 @@ def check_thresholds(metrics: dict) -> list[str]:
     failures = []
     for metric, threshold in THRESHOLDS.items():
         value = metrics.get(metric, 0.0)
-        if value < threshold:
+        # NaN comparisons are always False in Python (`nan < threshold` is
+        # False), so a broken pipeline that produces NaN would otherwise
+        # silently bypass the gate instead of failing it.
+        if math.isnan(value) or value < threshold:
             failures.append(f"{metric}={value:.3f} < threshold={threshold}")
     return failures
 
@@ -266,7 +284,7 @@ async def main() -> None:
     if args.ci:
         failures = check_thresholds(metrics)
         if failures:
-            print("\nRATAS quality gate FAILED:")
+            print("\nRAGAS quality gate FAILED:")
             for f in failures:
                 print(f"   {f}")
             sys.exit(1)
