@@ -85,34 +85,21 @@ class _SlidingWindowRateLimiter:
                 time.sleep(wait)
 
 
-def _apply_rate_limit(client, max_calls_per_minute: int = NIM_JUDGE_MAX_RPM):
-    """Monkey-patch client.chat.completions.create / client.embeddings.create so
-    every call goes through a shared rate limiter.
+def _rate_limit_method(obj, method_name: str, limiter: "_SlidingWindowRateLimiter") -> None:
+    """Monkey-patch a single bound method on `obj` to acquire `limiter` before calling through.
 
-    Patches the bound methods on the existing client object rather than wrapping
-    it in a proxy — ragas's `instructor` integration does isinstance checks on the
-    client, so substituting a duck-typed wrapper for the client itself would break
-    that detection. Mutating the object's methods in place preserves its type.
+    Patches the method on the existing object rather than wrapping the object in a
+    proxy — ragas's `instructor` integration does isinstance checks on the client,
+    so substituting a duck-typed wrapper for the client itself would break that
+    detection. Mutating the object's method in place preserves its type.
     """
-    limiter = _SlidingWindowRateLimiter(max_calls_per_minute, period_seconds=60.0)
+    original = getattr(obj, method_name)
 
-    orig_chat_create = client.chat.completions.create
-
-    def _rate_limited_chat_create(*args, **kwargs):
+    def _rate_limited(*args, **kwargs):
         limiter.acquire()
-        return orig_chat_create(*args, **kwargs)
+        return original(*args, **kwargs)
 
-    client.chat.completions.create = _rate_limited_chat_create
-
-    orig_embeddings_create = client.embeddings.create
-
-    def _rate_limited_embeddings_create(*args, **kwargs):
-        limiter.acquire()
-        return orig_embeddings_create(*args, **kwargs)
-
-    client.embeddings.create = _rate_limited_embeddings_create
-
-    return client
+    setattr(obj, method_name, _rate_limited)
 
 
 def parse_args() -> argparse.Namespace:
@@ -227,7 +214,8 @@ async def run_evaluation(args: argparse.Namespace) -> dict:
         # ragas.metrics.collections gives submodules which are not callable
         from ragas.metrics import answer_relevancy, context_precision, faithfulness
         from ragas.llms import llm_factory
-        from ragas.embeddings import embedding_factory
+        from ragas.embeddings.base import LangchainEmbeddingsWrapper
+        from langchain_openai import OpenAIEmbeddings as LangchainOpenAIEmbeddings
         from openai import OpenAI
 
         samples = [
@@ -243,10 +231,32 @@ async def run_evaluation(args: argparse.Namespace) -> dict:
 
         nim_key = os.getenv("NVIDIA_NIM_API_KEY", "")
         nim_base = "https://integrate.api.nvidia.com/v1"
-        nim_client = _apply_rate_limit(OpenAI(api_key=nim_key, base_url=nim_base))
 
+        # Shared limiter: judge-LLM calls and embedding calls both count against
+        # the same 10 RPM budget, since both hit the same NIM account/rate limit.
+        rate_limiter = _SlidingWindowRateLimiter(NIM_JUDGE_MAX_RPM, period_seconds=60.0)
+
+        nim_client = OpenAI(api_key=nim_key, base_url=nim_base)
+        _rate_limit_method(nim_client.chat.completions, "create", rate_limiter)
         judge_llm = llm_factory(args.judge_model, client=nim_client)
-        judge_embeddings = embedding_factory("openai", model="nvidia/nv-embedqa-e5-v5", client=nim_client)
+
+        # `ragas.embeddings.embedding_factory()`'s modern interface returns a class
+        # that lacks `embed_query`, which the (deprecated but still-used) singleton
+        # `answer_relevancy` metric requires — so build the legacy Langchain wrapper
+        # directly instead. nv-embedqa-e5-v5 is an asymmetric embedding model that
+        # requires an explicit `input_type`; LangChain's client also pre-tokenizes
+        # text into token-ID lists by default, which NIM's endpoint rejects, so
+        # tokenization must be disabled and `input_type` passed via `extra_body`.
+        nim_embeddings = LangchainOpenAIEmbeddings(
+            model="nvidia/nv-embedqa-e5-v5",
+            api_key=nim_key,
+            base_url=nim_base,
+            check_embedding_ctx_length=False,
+            tiktoken_enabled=False,
+            model_kwargs={"extra_body": {"input_type": "query"}},
+        )
+        _rate_limit_method(nim_embeddings.client, "create", rate_limiter)
+        judge_embeddings = LangchainEmbeddingsWrapper(nim_embeddings)
 
         result = ragas_evaluate(
             dataset=dataset,

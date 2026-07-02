@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from eval.run_ragas import _apply_rate_limit, _mean, check_thresholds, THRESHOLDS
+from eval.run_ragas import _mean, _rate_limit_method, _SlidingWindowRateLimiter, check_thresholds, THRESHOLDS
 
 
 def test_golden_set_loads():
@@ -76,28 +76,44 @@ def test_mean_all_nan_returns_nan():
     assert math.isnan(result)
 
 
-def test_rate_limit_allows_calls_under_the_cap():
+def test_rate_limit_method_allows_calls_under_the_cap():
     """Calls within the per-minute cap must not be delayed."""
-    mock_client = MagicMock()
-    original_chat_create = mock_client.chat.completions.create
-    original_chat_create.return_value = "chat-response"
-    mock_client.embeddings.create.return_value = "embed-response"
+    mock_obj = MagicMock()
+    original_create = mock_obj.create
+    original_create.return_value = "response"
+    limiter = _SlidingWindowRateLimiter(max_calls=5, period_seconds=60.0)
 
-    limited = _apply_rate_limit(mock_client, max_calls_per_minute=5)
+    _rate_limit_method(mock_obj, "create", limiter)
 
     start = time.monotonic()
     for _ in range(5):
-        assert limited.chat.completions.create() == "chat-response"
+        assert mock_obj.create() == "response"
     elapsed = time.monotonic() - start
 
     assert elapsed < 1.0
-    assert original_chat_create.call_count == 5
+    assert original_create.call_count == 5
+
+
+def test_rate_limit_method_shares_limiter_across_two_objects():
+    """Two different objects patched with the same limiter share one call budget."""
+    chat_obj = MagicMock()
+    embed_obj = MagicMock()
+    limiter = _SlidingWindowRateLimiter(max_calls=2, period_seconds=0.3)
+
+    _rate_limit_method(chat_obj, "create", limiter)
+    _rate_limit_method(embed_obj, "create", limiter)
+
+    chat_obj.create()
+    embed_obj.create()
+    start = time.monotonic()
+    chat_obj.create()  # 3rd call across both objects — must wait for the window
+    elapsed = time.monotonic() - start
+
+    assert elapsed >= 0.25
 
 
 def test_rate_limit_blocks_once_cap_is_exceeded():
     """The (max_calls + 1)th call within the window must block until it clears."""
-    from eval.run_ragas import _SlidingWindowRateLimiter
-
     # Short window so the test runs fast: 2 calls per 0.3s, instead of waiting 60s.
     limiter = _SlidingWindowRateLimiter(max_calls=2, period_seconds=0.3)
     limiter.acquire()
