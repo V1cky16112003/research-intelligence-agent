@@ -15,7 +15,7 @@ pytest tests/ -v --tb=short
 pytest tests/test_agent.py -v
 
 # Run RAGAS evaluation against live DB
-python -m eval.run_ragas --ci --limit 10
+python -m eval.run_ragas --ci --limit 6
 
 # Stage 1: Load ArXiv papers into Neon (requires dataset + DATABASE_URL)
 DATABASE_URL="..." PYTHONPATH=. python3 -m ingestion.loader \

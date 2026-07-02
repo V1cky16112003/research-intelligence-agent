@@ -38,7 +38,7 @@ jobs:
   ragas-quality-gate:
     name: RAGAS Quality Gate
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     needs: lint-and-test
     # Only run on PRs and pushes to main (not on forks without secrets)
     if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
@@ -61,8 +61,8 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run RAGAS quality gate
-        run: python -m eval.run_ragas --ci --limit 10
-        timeout-minutes: 15
+        run: python -m eval.run_ragas --ci --limit 6
+        timeout-minutes: 25
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}

@@ -162,7 +162,7 @@ Three jobs on every push/PR to `main`:
 | Job | What it does |
 |-----|-------------|
 | `lint-and-test` | ruff + pytest (22 tests, runs without Docker via conftest stubs) |
-| `ragas-quality-gate` | Runs RAGAS on 10 golden questions against live DB; exits 1 if thresholds breach |
+| `ragas-quality-gate` | Runs RAGAS on 6 golden questions against live DB (NIM judge at 10 RPM is slow — 40min job timeout); exits 1 if thresholds breach |
 | `keep-alive` | Pings `HF_SPACE_URL/health` to prevent cold start on next user |
 
 Add these **GitHub secrets** (Settings → Secrets → Actions):
