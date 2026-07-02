@@ -127,7 +127,11 @@ curl -X POST http://localhost:7860/chat \
    UPSTASH_REDIS_REST_URL
    UPSTASH_REDIS_REST_TOKEN
    GROQ_API_KEY
-   GEMINI_API_KEY
+   NVIDIA_NIM_API_KEY    # 2nd LLM fallback tier
+   GEMINI_API_KEY        # 3rd LLM fallback tier
+   NEO4J_URI             # AuraDB — optional, graph_query tool degrades gracefully if unset
+   NEO4J_USER
+   NEO4J_PASSWORD
    DAGSHUB_TOKEN
    DAGSHUB_REPO          # username/reponame
    ```
