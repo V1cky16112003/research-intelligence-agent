@@ -107,7 +107,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--golden", default="eval/golden_set.json", help="Path to golden set JSON")
     p.add_argument("--ci", action="store_true", help="CI mode: exit 1 if thresholds not met")
     p.add_argument("--limit", type=int, default=20, help="Max questions to evaluate")
-    p.add_argument("--judge-model", default="meta/llama-3.1-70b-instruct", help="LLM judge model for RAGAS (NVIDIA NIM by default — Gemini's 5rpm/20-per-day free tier is too small for judging multiple metrics per sample)")
+    p.add_argument("--judge-model", default="meta/llama-3.1-70b-instruct", help="LLM judge model for RAGAS (NVIDIA NIM by default — Gemini's 5rpm/20-per-day free tier is too small for judging multiple metrics per sample). 70B is the only model tested that reliably returns a valid structured-output instance for RAGAS's real verification prompts — smaller/faster candidates (8B, Mixtral 8x7B) were tried and rejected: 8B consistently echoes the JSON schema instead of a filled instance under instructor's real prompting (not just occasionally — reproduced on every run tested), and Mixtral 8x7B intermittently returns NVIDIA-side 'DEGRADED function' errors when that specific model is taken offline. 70B's tradeoff is per-call latency (20-90s observed), so CI's step/job timeouts are set generously to accommodate it — see ci.yml.")
     p.add_argument("--mlflow-uri", default="", help="MLflow tracking URI (defaults to MLFLOW_TRACKING_URI env)")
     p.add_argument("--experiment-name", default="rag-quality-gate", help="MLflow experiment name")
     return p.parse_args()

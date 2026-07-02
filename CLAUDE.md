@@ -95,7 +95,7 @@ it already picks among the other three tools.
 
 ### Evaluation (`eval/`)
 
-`golden_set.json` — 20 Q/A pairs. `run_ragas.py` runs RAGAS (NVIDIA NIM as judge — `meta/llama-3.1-70b-instruct` for scoring, `nvidia/nv-embedqa-e5-v5` for embeddings; Gemini's 5 req/min free tier is too small to judge multiple metrics per question) against live DB; CI gate thresholds: faithfulness ≥ 0.80, answer_relevancy ≥ 0.75, context_precision ≥ 0.70. `check_thresholds()` treats NaN scores as a hard failure, not a silent pass. Metrics logged to DagsHub MLflow.
+`golden_set.json` — 20 Q/A pairs. `run_ragas.py` runs RAGAS (NVIDIA NIM as judge — `meta/llama-3.1-70b-instruct` for scoring, `nvidia/nv-embedqa-e5-v5` for embeddings; Gemini's 5 req/min free tier is too small to judge multiple metrics per question) against live DB; CI gate thresholds: faithfulness ≥ 0.80, answer_relevancy ≥ 0.75, context_precision ≥ 0.70. `check_thresholds()` treats NaN scores as a hard failure, not a silent pass. 70B was chosen over faster candidates (8B, Mixtral 8x7B) after both proved unreliable — 8B reproducibly echoes the JSON schema instead of a filled instance under `instructor`'s structured-output prompting, and Mixtral intermittently returns NVIDIA-side "DEGRADED function" errors; 70B's tradeoff is per-call latency (20-90s, highly variable — CI timeouts sized generously, see `ci.yml`). Metrics logged to DagsHub MLflow.
 
 ### Tests (`tests/`)
 
