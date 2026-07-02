@@ -167,10 +167,13 @@ Three jobs on every push/PR to `main`:
 
 Add these **GitHub secrets** (Settings → Secrets → Actions):
 ```
-DATABASE_URL, GROQ_API_KEY, GEMINI_API_KEY,
+DATABASE_URL, GROQ_API_KEY, NVIDIA_NIM_API_KEY, GEMINI_API_KEY,
 UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN,
 DAGSHUB_TOKEN, DAGSHUB_REPO, HF_SPACE_URL
 ```
+`NVIDIA_NIM_API_KEY` is required here — the RAGAS judge in `eval/run_ragas.py`
+uses NIM (not Gemini) by default, since Gemini's free tier (5 req/min, 20
+requests/day) is too small to judge multiple RAGAS metrics per question.
 
 ---
 

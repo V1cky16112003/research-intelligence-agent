@@ -95,7 +95,7 @@ it already picks among the other three tools.
 
 ### Evaluation (`eval/`)
 
-`golden_set.json` — 20 Q/A pairs. `run_ragas.py` runs RAGAS (Gemini-as-judge) against live DB; CI gate thresholds: faithfulness ≥ 0.80, answer_relevancy ≥ 0.75, context_precision ≥ 0.70. Metrics logged to DagsHub MLflow.
+`golden_set.json` — 20 Q/A pairs. `run_ragas.py` runs RAGAS (NVIDIA NIM as judge — `meta/llama-3.1-70b-instruct` for scoring, `nvidia/nv-embedqa-e5-v5` for embeddings; Gemini's 5 req/min free tier is too small to judge multiple metrics per question) against live DB; CI gate thresholds: faithfulness ≥ 0.80, answer_relevancy ≥ 0.75, context_precision ≥ 0.70. `check_thresholds()` treats NaN scores as a hard failure, not a silent pass. Metrics logged to DagsHub MLflow.
 
 ### Tests (`tests/`)
 
@@ -112,8 +112,8 @@ DATABASE_URL              # Neon postgres connection string
 UPSTASH_REDIS_REST_URL    # Upstash REST endpoint
 UPSTASH_REDIS_REST_TOKEN  # Upstash auth token
 GROQ_API_KEY              # Primary LLM
-NVIDIA_NIM_API_KEY        # Second-tier LLM fallback
-GEMINI_API_KEY            # Third-tier LLM fallback + RAGAS judge
+NVIDIA_NIM_API_KEY        # Second-tier LLM fallback + RAGAS judge (chat + embeddings)
+GEMINI_API_KEY            # Third-tier LLM fallback
 NEO4J_URI                 # Neo4j AuraDB connection URI (graph_query tool)
 NEO4J_USER                # Neo4j AuraDB username
 NEO4J_PASSWORD            # Neo4j AuraDB password

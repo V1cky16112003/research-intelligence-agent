@@ -18,7 +18,10 @@ import logging
 import math
 import os
 import sys
+import threading
+import time
 import types
+from collections import deque
 from pathlib import Path
 
 # ragas 0.4.3 eagerly imports ChatVertexAI from langchain_community.chat_models.vertexai,
@@ -54,12 +57,70 @@ def _mean(val) -> float:
     return sum(vals) / len(vals) if vals else float("nan")
 
 
+NIM_JUDGE_MAX_RPM = 10  # stay well under NIM's 40 RPM free-tier cap during RAGAS evaluation
+
+
+class _SlidingWindowRateLimiter:
+    """Thread-safe rate limiter: blocks until fewer than max_calls have been made
+    in the trailing period_seconds window. RAGAS dispatches metric evaluations from
+    a thread pool (not asyncio), so this uses threading.Lock, not an asyncio lock."""
+
+    def __init__(self, max_calls: int, period_seconds: float) -> None:
+        self._max_calls = max_calls
+        self._period = period_seconds
+        self._lock = threading.Lock()
+        self._timestamps: deque[float] = deque()
+
+    def acquire(self) -> None:
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                while self._timestamps and now - self._timestamps[0] >= self._period:
+                    self._timestamps.popleft()
+                if len(self._timestamps) < self._max_calls:
+                    self._timestamps.append(now)
+                    return
+                wait = self._period - (now - self._timestamps[0])
+            if wait > 0:
+                time.sleep(wait)
+
+
+def _apply_rate_limit(client, max_calls_per_minute: int = NIM_JUDGE_MAX_RPM):
+    """Monkey-patch client.chat.completions.create / client.embeddings.create so
+    every call goes through a shared rate limiter.
+
+    Patches the bound methods on the existing client object rather than wrapping
+    it in a proxy — ragas's `instructor` integration does isinstance checks on the
+    client, so substituting a duck-typed wrapper for the client itself would break
+    that detection. Mutating the object's methods in place preserves its type.
+    """
+    limiter = _SlidingWindowRateLimiter(max_calls_per_minute, period_seconds=60.0)
+
+    orig_chat_create = client.chat.completions.create
+
+    def _rate_limited_chat_create(*args, **kwargs):
+        limiter.acquire()
+        return orig_chat_create(*args, **kwargs)
+
+    client.chat.completions.create = _rate_limited_chat_create
+
+    orig_embeddings_create = client.embeddings.create
+
+    def _rate_limited_embeddings_create(*args, **kwargs):
+        limiter.acquire()
+        return orig_embeddings_create(*args, **kwargs)
+
+    client.embeddings.create = _rate_limited_embeddings_create
+
+    return client
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run RAGAS evaluation over golden set")
     p.add_argument("--golden", default="eval/golden_set.json", help="Path to golden set JSON")
     p.add_argument("--ci", action="store_true", help="CI mode: exit 1 if thresholds not met")
     p.add_argument("--limit", type=int, default=20, help="Max questions to evaluate")
-    p.add_argument("--judge-model", default="gemini-2.5-flash", help="LLM judge model for RAGAS")
+    p.add_argument("--judge-model", default="meta/llama-3.1-70b-instruct", help="LLM judge model for RAGAS (NVIDIA NIM by default — Gemini's 5rpm/20-per-day free tier is too small for judging multiple metrics per sample)")
     p.add_argument("--mlflow-uri", default="", help="MLflow tracking URI (defaults to MLFLOW_TRACKING_URI env)")
     p.add_argument("--experiment-name", default="rag-quality-gate", help="MLflow experiment name")
     return p.parse_args()
@@ -180,12 +241,12 @@ async def run_evaluation(args: argparse.Namespace) -> dict:
         ]
         dataset = EvaluationDataset(samples=samples)
 
-        gemini_key = os.getenv("GEMINI_API_KEY", "")
-        gemini_base = "https://generativelanguage.googleapis.com/v1beta/openai/"
-        gemini_client = OpenAI(api_key=gemini_key, base_url=gemini_base)
+        nim_key = os.getenv("NVIDIA_NIM_API_KEY", "")
+        nim_base = "https://integrate.api.nvidia.com/v1"
+        nim_client = _apply_rate_limit(OpenAI(api_key=nim_key, base_url=nim_base))
 
-        judge_llm = llm_factory(args.judge_model, client=gemini_client)
-        judge_embeddings = embedding_factory("openai", model="text-embedding-004", client=gemini_client)
+        judge_llm = llm_factory(args.judge_model, client=nim_client)
+        judge_embeddings = embedding_factory("openai", model="nvidia/nv-embedqa-e5-v5", client=nim_client)
 
         result = ragas_evaluate(
             dataset=dataset,
