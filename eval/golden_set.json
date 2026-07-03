@@ -1,142 +1,142 @@
 [
   {
     "id": "q001",
-    "question": "What is the attention mechanism in transformers and how does it work?",
-    "ground_truth": "The attention mechanism allows transformers to weigh the importance of different input tokens when producing each output token. Self-attention computes query, key, and value vectors for each token and uses scaled dot-product attention to aggregate context.",
-    "contexts": ["attention is all you need", "self-attention", "transformer architecture"],
+    "question": "How does a self-attention mechanism let a Transformer relate different positions in a sequence to each other?",
+    "ground_truth": "Self-attention lets the Transformer relate different positions of a single sequence in order to compute a representation of the sequence, replacing the recurrent and convolutional layers used in prior sequence transduction models with an attention-only encoder-decoder architecture.",
+    "contexts": ["self-attention", "transformer", "relative position representations", "sequence transduction"],
     "category": "cs.LG"
   },
   {
     "id": "q002",
-    "question": "What are the key differences between BERT and GPT language model architectures?",
-    "ground_truth": "BERT uses bidirectional encoder-only transformers trained with masked language modeling, while GPT uses unidirectional decoder-only transformers trained with causal language modeling. BERT is better for understanding tasks; GPT for generation.",
-    "contexts": ["BERT", "GPT", "language model", "encoder decoder"],
+    "question": "How do deep contextualized word representations differ from traditional fixed word embeddings?",
+    "ground_truth": "Deep contextualized word representations model both complex characteristics of word use (syntax and semantics) and how those uses vary across linguistic contexts, so the same word gets a different vector depending on its context, unlike traditional fixed embeddings which assign one vector per word regardless of context.",
+    "contexts": ["ELMo", "contextualized word representations", "word embeddings", "polysemy"],
     "category": "cs.CL"
   },
   {
     "id": "q003",
-    "question": "How do diffusion models generate images?",
-    "ground_truth": "Diffusion models generate images by learning to reverse a gradual noising process. During training, noise is progressively added to images. During inference, the model iteratively denoises random noise into a coherent image, guided by a learned score function.",
-    "contexts": ["diffusion model", "denoising", "score matching", "DDPM"],
-    "category": "cs.CV"
+    "question": "Why are generative adversarial networks (GANs) considered hard to train, and what causes this instability?",
+    "ground_truth": "GAN training instability is commonly attributed to an inherent imbalance between the generator and discriminator networks, where the discriminator can become too strong relative to the generator, destabilizing the adversarial training dynamic even though GANs can produce realistic samples from high-dimensional distributions.",
+    "contexts": ["GAN", "generative adversarial network", "discriminator", "generator", "training instability"],
+    "category": "cs.LG"
   },
   {
     "id": "q004",
-    "question": "What is retrieval-augmented generation (RAG) and why is it useful?",
-    "ground_truth": "RAG combines a retrieval system with a language model: relevant documents are retrieved from a knowledge base and provided as context to the LLM, reducing hallucinations and allowing the model to answer questions about information not in its training data.",
-    "contexts": ["retrieval augmented generation", "RAG", "knowledge base", "hallucination"],
+    "question": "How does an attention mechanism help a sequence-to-sequence decoder in neural machine translation?",
+    "ground_truth": "In sequence-to-sequence neural machine translation, an attention mechanism lets the decoder capture relevant source-side contextual information at each time-step prediction, rather than relying on a single fixed-size encoded representation of the whole source sentence.",
+    "contexts": ["sequence-to-sequence", "attention", "neural machine translation", "decoder"],
     "category": "cs.CL"
   },
   {
     "id": "q005",
-    "question": "What is the role of the critic network in reinforcement learning from human feedback (RLHF)?",
-    "ground_truth": "In RLHF, the critic (reward model) is trained on human preference data to score model outputs. It provides the reward signal used to fine-tune the language model via PPO or similar RL algorithms, aligning model behavior with human preferences.",
-    "contexts": ["RLHF", "reward model", "PPO", "human feedback", "alignment"],
+    "question": "How can reinforcement learning agents be trained using human preferences instead of a hand-specified reward function?",
+    "ground_truth": "Instead of hand-specifying a reward function, an RL agent's goals can be defined in terms of non-expert human preferences between pairs of trajectory segments; a model is fit to these preference comparisons and used to provide the reward signal that trains the agent's policy.",
+    "contexts": ["reinforcement learning", "human preferences", "reward model", "trajectory comparison"],
     "category": "cs.LG"
   },
   {
     "id": "q006",
-    "question": "How does LoRA reduce the number of trainable parameters in fine-tuning?",
-    "ground_truth": "LoRA (Low-Rank Adaptation) freezes the pre-trained model weights and injects trainable rank-decomposition matrices into each layer. Instead of updating the full weight matrix W, it learns two small matrices A and B where the update is BA, drastically reducing parameters.",
-    "contexts": ["LoRA", "low-rank adaptation", "fine-tuning", "parameter efficient"],
-    "category": "cs.LG"
+    "question": "How can combining GloVe and word2vec embeddings in an ensemble improve word representation quality?",
+    "ground_truth": "An ensemble approach can combine word embeddings produced separately by GloVe and word2vec together with structured knowledge, since each method captures somewhat different aspects of word meaning from co-occurrence statistics, and combining them yields higher-quality embeddings than either alone.",
+    "contexts": ["word2vec", "GloVe", "word embeddings", "ensemble"],
+    "category": "cs.CL"
   },
   {
     "id": "q007",
-    "question": "What is the vanishing gradient problem and how do residual connections solve it?",
-    "ground_truth": "In deep networks, gradients diminish exponentially during backpropagation, making early layers hard to train. Residual connections (skip connections) add the input directly to the output of a layer, creating gradient highways that allow gradients to flow unchanged to earlier layers.",
-    "contexts": ["vanishing gradient", "residual connection", "skip connection", "deep learning"],
+    "question": "What is the shattered gradients problem and how do residual connections address it?",
+    "ground_truth": "Beyond simple vanishing/exploding gradients, deep networks without skip connections suffer from 'shattered gradients', where the gradients of very deep networks resemble white noise and become increasingly uncorrelated with depth; residual (skip) connections counteract this by giving gradients a more direct path back through the network.",
+    "contexts": ["shattered gradients", "vanishing gradient", "residual connection", "resnet"],
     "category": "cs.LG"
   },
   {
     "id": "q008",
-    "question": "What is contrastive learning and how is it used in self-supervised representation learning?",
-    "ground_truth": "Contrastive learning trains encoders by pulling representations of similar (positive) pairs together and pushing dissimilar (negative) pairs apart, without labels. Methods like SimCLR and MoCo use data augmentation to create positive pairs from the same image.",
-    "contexts": ["contrastive learning", "SimCLR", "MoCo", "self-supervised", "representation learning"],
-    "category": "cs.CV"
+    "question": "How does regularization based on weight decay and dropout help prevent overfitting in deep networks trained on small datasets?",
+    "ground_truth": "Standard deep network training methods based on weight decay and dropout perform well with very large training sets, but tend to overfit when trained on small datasets, motivating alternative regularization approaches such as function-norm-based regularization.",
+    "contexts": ["dropout", "weight decay", "regularization", "overfitting"],
+    "category": "cs.LG"
   },
   {
     "id": "q009",
-    "question": "How does the mixture of experts (MoE) architecture scale language models efficiently?",
-    "ground_truth": "MoE replaces dense feed-forward layers with multiple expert networks and a learned router that selects a sparse subset of experts per token. This increases model capacity without proportionally increasing computation, enabling very large models to be trained efficiently.",
-    "contexts": ["mixture of experts", "MoE", "sparse routing", "expert network"],
+    "question": "How do gating mechanisms in LSTMs and GRUs help recurrent networks learn long-term temporal dependencies?",
+    "ground_truth": "LSTMs and GRUs use gating mechanisms that empirically improve the learning of medium- to long-term temporal dependencies in sequences, helping mitigate the vanishing gradient issue that limits how far back in time a plain recurrent network can effectively learn.",
+    "contexts": ["LSTM", "GRU", "gating mechanism", "long-term dependency", "recurrent neural network"],
     "category": "cs.LG"
   },
   {
     "id": "q010",
-    "question": "What is the CLIP model and how does it connect images and text?",
-    "ground_truth": "CLIP (Contrastive Language-Image Pretraining) trains a visual encoder and text encoder jointly using contrastive learning on 400M image-text pairs from the web. The encoders learn a shared embedding space where matching image-text pairs are close together.",
-    "contexts": ["CLIP", "contrastive language image", "visual encoder", "text encoder", "zero-shot"],
-    "category": "cs.CV"
-  },
-  {
-    "id": "q011",
-    "question": "What problem does the Mamba state space model solve compared to transformers?",
-    "ground_truth": "Mamba addresses the quadratic complexity of transformer self-attention with sequence length. Using selective state space models (SSMs), Mamba achieves linear-time sequence modeling, making it efficient for very long sequences while maintaining competitive performance.",
-    "contexts": ["Mamba", "state space model", "SSM", "linear attention", "long sequence"],
+    "question": "How does a variational autoencoder learn a latent representation of data for generative modeling?",
+    "ground_truth": "A variational autoencoder is a deep generative model that is stochastically fit to samples from a data distribution using an information-theoretic variational bound on the true underlying distribution, learning a latent representation from which new samples can be generated.",
+    "contexts": ["variational autoencoder", "VAE", "latent representation", "generative model"],
     "category": "cs.LG"
   },
   {
+    "id": "q011",
+    "question": "How does an encoder-decoder architecture combine a CNN and an RNN to generate image captions?",
+    "ground_truth": "Neural image captioning systems typically use an encoder-decoder framework where a convolutional neural network (CNN) extracts visual features from the image and a recurrent neural network (RNN) decodes those features into a natural-language caption, grounding language generation in the visual content.",
+    "contexts": ["image captioning", "CNN", "RNN", "encoder-decoder", "visual language grounding"],
+    "category": "cs.CV"
+  },
+  {
     "id": "q012",
-    "question": "How does knowledge distillation transfer knowledge from a large teacher model to a smaller student model?",
-    "ground_truth": "Knowledge distillation trains a small student model to mimic the soft output probabilities (logits) of a large teacher model rather than just hard labels. The soft targets carry richer information about class similarities, enabling the student to generalize better.",
-    "contexts": ["knowledge distillation", "teacher student", "soft labels", "model compression"],
+    "question": "What does it mean for a student model to be trained 'born-again' from a teacher of the same or comparable capacity?",
+    "ground_truth": "In knowledge distillation, a student model is trained to reproduce the outputs of a teacher model; 'Born-Again Networks' show that even when the student has the same architecture and capacity as the teacher, distilling knowledge from teacher to student can still improve the student beyond the teacher's own performance.",
+    "contexts": ["knowledge distillation", "teacher student", "born-again networks", "model compression"],
     "category": "cs.LG"
   },
   {
     "id": "q013",
-    "question": "What is the role of positional encoding in transformer models?",
-    "ground_truth": "Transformers have no inherent notion of token order since attention is permutation-equivariant. Positional encodings inject position information by adding fixed or learned vectors to token embeddings, allowing the model to distinguish token positions.",
-    "contexts": ["positional encoding", "position embedding", "rotary embedding", "transformer"],
+    "question": "Why do transformers need positional information added to token representations, and how can relative position be represented?",
+    "ground_truth": "Because a Transformer's attention mechanism does not explicitly model relative or absolute position the way recurrent or convolutional networks implicitly do, position information must be added to token representations; one approach represents relative positions between sequence elements directly within the self-attention mechanism itself.",
+    "contexts": ["positional encoding", "relative position representations", "transformer", "self-attention"],
     "category": "cs.LG"
   },
   {
     "id": "q014",
-    "question": "How do vision transformers (ViT) process images differently from CNNs?",
-    "ground_truth": "ViT splits an image into fixed-size patches, linearly embeds each patch, and processes the sequence with a standard transformer encoder. Unlike CNNs with their inductive biases for locality and translation invariance, ViT learns spatial relationships purely through self-attention.",
-    "contexts": ["vision transformer", "ViT", "image patch", "CNN comparison"],
+    "question": "How does neural style transfer use a CNN to separate and recombine the content and style of two images?",
+    "ground_truth": "Neural style transfer uses convolutional neural networks to separate the content representation of one image from the style representation of another, then recombines them to render the content image in the artistic style of the style image.",
+    "contexts": ["neural style transfer", "CNN", "content and style", "image generation"],
     "category": "cs.CV"
   },
   {
     "id": "q015",
-    "question": "What is flash attention and why does it make transformer training faster?",
-    "ground_truth": "Flash Attention is an IO-aware exact attention algorithm that tiles the attention computation to minimize memory reads/writes between GPU HBM and SRAM. It achieves the same mathematical result as standard attention but is 2-4x faster by reducing memory bandwidth usage.",
-    "contexts": ["flash attention", "IO-aware", "HBM", "SRAM", "memory efficient attention"],
-    "category": "cs.LG"
+    "question": "How did the Transformer architecture replace recurrence and convolutions with an attention-only design?",
+    "ground_truth": "The Transformer is a model architecture that relies entirely on an attention mechanism to draw global dependencies between input and output, dispensing with the recurrent and convolutional encoder-decoder configurations that dominated prior sequence transduction models.",
+    "contexts": ["transformer", "attention is all you need", "encoder-decoder", "sequence transduction"],
+    "category": "cs.CL"
   },
   {
     "id": "q016",
-    "question": "What are the main evaluation metrics used for large language models?",
-    "ground_truth": "LLMs are evaluated on benchmarks like MMLU (general knowledge), HumanEval (coding), GSM8K (math reasoning), and HellaSwag (commonsense). Automated metrics include perplexity, BLEU, ROUGE, and BERTScore; human evaluation and LLM-as-judge are used for open-ended generation.",
-    "contexts": ["LLM evaluation", "MMLU", "HumanEval", "benchmark", "perplexity"],
+    "question": "Why is perplexity an incomplete metric for evaluating language models, and what do scaling-based evaluations add?",
+    "ground_truth": "Perplexity quantifies how well a language model predicts held-out text, but it does not provide qualitative information about specific successes or failures of a model; evaluating how a model's performance scales with data or model size offers a complementary view beyond a single perplexity number.",
+    "contexts": ["language model evaluation", "perplexity", "scaling properties", "benchmark"],
     "category": "cs.CL"
   },
   {
     "id": "q017",
-    "question": "How does speculative decoding speed up LLM inference?",
-    "ground_truth": "Speculative decoding uses a small draft model to generate several tokens in parallel, then verifies them with the large target model in a single forward pass. Accepted tokens are kept; rejected ones trigger resampling. This reduces the number of large model forward passes needed.",
-    "contexts": ["speculative decoding", "draft model", "inference acceleration", "token prediction"],
+    "question": "Why are policy gradient methods appealing for reinforcement learning with neural network function approximators?",
+    "ground_truth": "Policy gradient methods directly optimize the cumulative reward and can be straightforwardly combined with nonlinear function approximators such as neural networks, though they face challenges around requiring large numbers of samples and high variance in the gradient estimates.",
+    "contexts": ["policy gradient", "reinforcement learning", "generalized advantage estimation", "continuous control"],
     "category": "cs.LG"
   },
   {
     "id": "q018",
-    "question": "What is gradient checkpointing and when is it used in training deep networks?",
-    "ground_truth": "Gradient checkpointing trades compute for memory by not storing all intermediate activations during the forward pass. Instead, activations are recomputed during backpropagation as needed. It allows training larger models or larger batches at the cost of ~33% more compute.",
-    "contexts": ["gradient checkpointing", "activation recomputation", "memory efficiency", "training"],
+    "question": "What problem does Group Normalization address that Batch Normalization has at small batch sizes?",
+    "ground_truth": "Batch Normalization normalizes activations along the batch dimension, but its error increases rapidly as batch size shrinks because batch statistics become inaccurate with fewer samples; Group Normalization instead normalizes within groups of channels, independent of batch size.",
+    "contexts": ["batch normalization", "group normalization", "small batch size", "training stability"],
     "category": "cs.LG"
   },
   {
     "id": "q019",
-    "question": "How does chain-of-thought prompting improve reasoning in LLMs?",
-    "ground_truth": "Chain-of-thought (CoT) prompting elicits step-by-step reasoning by including example reasoning chains in the prompt. This allows LLMs to decompose complex problems into intermediate steps, significantly improving performance on arithmetic, commonsense, and symbolic reasoning tasks.",
-    "contexts": ["chain of thought", "CoT", "reasoning", "prompting", "few-shot"],
-    "category": "cs.CL"
+    "question": "How do convolutional neural networks use image texture and structure as discriminative features for classification?",
+    "ground_truth": "Convolutional neural networks rely on image texture and structure to serve as discriminative features when classifying image content, and image enhancement techniques can be applied as a preprocessing step to improve those features and the network's overall classification performance.",
+    "contexts": ["CNN", "image classification", "discriminative features", "image enhancement"],
+    "category": "cs.CV"
   },
   {
     "id": "q020",
-    "question": "What is the difference between in-context learning and fine-tuning in LLMs?",
-    "ground_truth": "In-context learning (ICL) adapts an LLM at inference time by providing examples in the prompt without updating weights. Fine-tuning updates model weights on task-specific data. ICL is flexible and requires no training but is limited by context length; fine-tuning is more efficient at inference but requires a training phase.",
-    "contexts": ["in-context learning", "ICL", "fine-tuning", "few-shot", "prompt"],
+    "question": "How does Universal Language Model Fine-tuning (ULMFiT) adapt inductive transfer learning to NLP tasks?",
+    "ground_truth": "ULMFiT applies inductive transfer learning to NLP by pretraining a general-purpose language model and then fine-tuning it for a target task, avoiding the task-specific architecture modifications and training-from-scratch that earlier NLP approaches required, similar to how transfer learning had already impacted computer vision.",
+    "contexts": ["ULMFiT", "fine-tuning", "transfer learning", "language model"],
     "category": "cs.CL"
   }
 ]
