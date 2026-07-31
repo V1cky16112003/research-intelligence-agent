@@ -61,12 +61,13 @@ async def rag_retrieval_tool(query: str, categories: str | None = None) -> str:
         return json.dumps({"tool": "rag_retrieval", "error": str(e), "results": []})
 
 
-async def sql_analytics_tool(query_type: str) -> str:
+async def sql_analytics_tool(query_type: str, category: str | None = None) -> str:
     """
     Run SQL analytics queries over the papers corpus.
 
     Args:
         query_type: One of: 'papers_by_month', 'query_volume', 'provider_latency', 'experiments'
+        category: Optional ArXiv category filter (e.g. 'cs.LG') for papers_by_month.
 
     Returns:
         JSON string with query results.
@@ -77,7 +78,7 @@ async def sql_analytics_tool(query_type: str) -> str:
     try:
         async with get_connection() as conn:
             if query_type == "papers_by_month":
-                results = await queries.papers_per_category_per_month(conn)
+                results = await queries.papers_per_category_per_month(conn, category=category)
             elif query_type == "query_volume":
                 results = await queries.rolling_query_volume(conn, days=7)
             elif query_type == "provider_latency":
@@ -222,6 +223,10 @@ TOOL_DEFINITIONS = [
                         "type": "string",
                         "enum": ["papers_by_month", "query_volume", "provider_latency", "experiments"],
                         "description": "papers_by_month: paper counts by category/month. query_volume: recent query trends. provider_latency: LLM latency stats. experiments: full eval metrics.",
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Optional ArXiv category filter for papers_by_month (e.g. 'cs.LG', 'cs.AI'). Omit to get all categories.",
                     },
                 },
                 "required": ["query_type"],

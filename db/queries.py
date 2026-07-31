@@ -310,22 +310,26 @@ async def log_query(conn: psycopg.AsyncConnection, **kwargs: Any) -> None:
     logger.debug("Logged query for session %s", kwargs.get("session_id"))
 
 
-async def papers_per_category_per_month(conn: psycopg.AsyncConnection) -> list[dict[str, Any]]:
+async def papers_per_category_per_month(
+    conn: psycopg.AsyncConnection, category: str | None = None
+) -> list[dict[str, Any]]:
     """Window function: paper count per (category, month) with recency rank."""
-    sql = """
+    cat_filter = "AND cat = %s" if category else ""
+    sql = f"""
         SELECT
             cat,
             DATE_TRUNC('month', published_at) AS month,
             COUNT(*) AS paper_count,
             ROW_NUMBER() OVER (PARTITION BY cat ORDER BY DATE_TRUNC('month', published_at) DESC) AS recency_rank
         FROM papers, UNNEST(categories) AS cat
-        WHERE published_at IS NOT NULL
+        WHERE published_at IS NOT NULL {cat_filter}
         GROUP BY cat, month
         ORDER BY cat, month DESC
         LIMIT 500
     """
+    params = (category,) if category else ()
     async with conn.cursor() as cur:
-        await cur.execute(sql)
+        await cur.execute(sql, params)
         col_names = [d[0] for d in cur.description]
         rows = await cur.fetchall()
         return [dict(zip(col_names, row)) for row in rows]
