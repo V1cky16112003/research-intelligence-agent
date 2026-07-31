@@ -1,10 +1,13 @@
 from __future__ import annotations
+
 """Unit tests for LLM gateway — no real API calls."""
 import json
 from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-from agent.gateway import LLMGateway, GatewayExhaustedError
 from openai import RateLimitError
+
+from agent.gateway import GatewayExhaustedError, LLMGateway
 
 
 def _make_response(content: str = "hello", provider: str = "groq") -> dict:
@@ -109,7 +112,7 @@ async def test_all_three_exhausted():
 @pytest.mark.asyncio
 async def test_redis_client_detection():
     """create_redis_client returns correct type based on URL scheme."""
-    from agent.redis_client import create_redis_client, UpstashRedisClient, LocalRedisClient
+    from agent.redis_client import LocalRedisClient, UpstashRedisClient, create_redis_client
 
     upstash = await create_redis_client("https://default:token@my-host.upstash.io")
     assert isinstance(upstash, UpstashRedisClient)

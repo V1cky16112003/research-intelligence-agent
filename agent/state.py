@@ -1,7 +1,8 @@
 from __future__ import annotations
+
 """LangGraph shared state schema for the research agent."""
-from typing import TypedDict, Annotated
 import operator
+from typing import Annotated, TypedDict
 
 
 class AgentState(TypedDict):

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 Sync papers (authors, categories) from Postgres into Neo4j AuraDB.
 
@@ -63,7 +64,7 @@ async def sync_papers_to_graph(driver, papers: list[dict]) -> int:
 
 async def run_sync(limit: int = 50_000) -> dict:
     """Fetch papers from Postgres and sync them into Neo4j."""
-    from db.connection import init_pool, get_connection
+    from db.connection import get_connection, init_pool
     from graph.neo4j_client import get_driver
 
     await init_pool()

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 LLM-based reranker for retrieved chunks.
 

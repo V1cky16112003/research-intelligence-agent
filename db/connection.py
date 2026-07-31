@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 Async PostgreSQL connection pool using psycopg3 + psycopg_pool.
 Reads DATABASE_URL from environment.

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 Thin async wrapper around the Neo4j Python driver.
 

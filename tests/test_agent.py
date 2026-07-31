@@ -1,8 +1,10 @@
 from __future__ import annotations
+
 """Tests for the LangGraph agent graph — all LLM/DB calls mocked."""
 import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 @pytest.mark.asyncio
@@ -47,8 +49,9 @@ async def test_planner_handles_bad_json():
 
 @pytest.mark.asyncio
 async def test_executor_calls_tool():
-    from agent.nodes import executor_node
     import json
+
+    from agent.nodes import executor_node
     mock_result = json.dumps({
         "tool": "rag_retrieval",
         "results": [{"content": "chunk", "arxiv_id": "2024.001", "title": "Test"}],
@@ -203,7 +206,7 @@ async def test_critic_sees_draft_and_sets_refined_query():
 @pytest.mark.asyncio
 async def test_critic_retry_exhausted_becomes_pass():
     """Critic RETRY is ignored when retry_count already at MAX_RETRIES."""
-    from agent.nodes import critic_node, MAX_RETRIES
+    from agent.nodes import MAX_RETRIES, critic_node
     from agent.registry import set_gateway
     mock_gw = MagicMock()
     mock_gw.chat = AsyncMock(return_value={

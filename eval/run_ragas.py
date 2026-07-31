@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 RAGAS evaluation runner.
 
@@ -143,9 +144,9 @@ async def get_rag_answer(question: str, gateway) -> dict:
 
 async def run_evaluation(args: argparse.Namespace) -> dict:
     """Run the full evaluation pipeline. Returns metrics dict."""
-    from db.connection import init_pool
     from agent.gateway import LLMGateway
     from agent.redis_client import create_redis_client
+    from db.connection import init_pool
 
     # Load golden set
     golden_path = Path(args.golden)
@@ -208,15 +209,16 @@ async def run_evaluation(args: argparse.Namespace) -> dict:
 
     # Build RAGAS dataset
     try:
+        from langchain_openai import OpenAIEmbeddings as LangchainOpenAIEmbeddings
+        from openai import OpenAI
         from ragas import EvaluationDataset, SingleTurnSample
         from ragas import evaluate as ragas_evaluate
+        from ragas.embeddings.base import LangchainEmbeddingsWrapper
+        from ragas.llms import llm_factory
+
         # ragas.metrics gives pre-instantiated singletons (no () needed);
         # ragas.metrics.collections gives submodules which are not callable
         from ragas.metrics import answer_relevancy, context_precision, faithfulness
-        from ragas.llms import llm_factory
-        from ragas.embeddings.base import LangchainEmbeddingsWrapper
-        from langchain_openai import OpenAIEmbeddings as LangchainOpenAIEmbeddings
-        from openai import OpenAI
 
         samples = [
             SingleTurnSample(

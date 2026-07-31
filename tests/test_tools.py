@@ -1,9 +1,12 @@
 from __future__ import annotations
+
 """Tests for agent tools — mocks all external dependencies."""
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from agent.tools import TOOL_DISPATCH, TOOL_DEFINITIONS
+
+from agent.tools import TOOL_DEFINITIONS, TOOL_DISPATCH
 
 
 @pytest.mark.asyncio

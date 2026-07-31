@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """Tests for the RAGAS evaluation runner."""
 import json
 import math
@@ -8,7 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from eval.run_ragas import _mean, _rate_limit_method, _SlidingWindowRateLimiter, check_thresholds, THRESHOLDS
+from eval.run_ragas import THRESHOLDS, _mean, _rate_limit_method, _SlidingWindowRateLimiter, check_thresholds
 
 
 def test_golden_set_loads():

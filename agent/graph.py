@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 LangGraph state machine: Planner → Executor → Reporter → Critic.
 
@@ -14,9 +15,10 @@ import logging
 import os
 from typing import Any
 
-from langgraph.graph import StateGraph, END
+from langgraph.graph import END, StateGraph
+
+from agent.nodes import MAX_RETRIES, critic_node, executor_node, planner_node, reporter_node
 from agent.state import AgentState
-from agent.nodes import planner_node, executor_node, critic_node, reporter_node, MAX_RETRIES
 
 logger = logging.getLogger(__name__)
 

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """Tests for graph/neo4j_client.py and graph/graph_sync.py — no live Neo4j connection."""
 from unittest.mock import AsyncMock, MagicMock, patch
 

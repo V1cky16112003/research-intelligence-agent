@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 End-to-end ingestion pipeline.
 
@@ -34,7 +35,7 @@ async def run_pipeline(
     Returns:
         Stats dict: {total_docs, total_chunks, elapsed_seconds}
     """
-    from db.connection import init_pool, get_connection
+    from db.connection import get_connection, init_pool
     from db.queries import insert_chunks_batch
     from ingestion.connector import ArxivAbstractConnector
     from ingestion.embed import chunk_text, embed_chunks

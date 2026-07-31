@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 LLM Gateway: Groq (primary) → NVIDIA NIM (2nd fallback) → Gemini 2.5 Flash (3rd fallback).
 
@@ -16,7 +17,7 @@ import logging
 import random
 from typing import Any
 
-from openai import AsyncOpenAI, RateLimitError, APIStatusError
+from openai import APIStatusError, AsyncOpenAI, RateLimitError
 
 logger = logging.getLogger(__name__)
 

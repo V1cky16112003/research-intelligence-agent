@@ -1,8 +1,10 @@
 from __future__ import annotations
+
 import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -50,7 +52,7 @@ settings = Settings()
 async def lifespan(app: FastAPI):
     # DB pool
     if settings.database_url:
-        from db.connection import init_pool, get_connection, apply_schema
+        from db.connection import apply_schema, get_connection, init_pool
         await init_pool(settings.database_url)
         try:
             async with get_connection() as conn:

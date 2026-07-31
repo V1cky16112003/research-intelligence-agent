@@ -6,6 +6,7 @@ This lets the test suite run locally without the full dependency stack.
 Real integration tests run in CI against docker-compose.
 """
 from __future__ import annotations
+
 import sys
 from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock

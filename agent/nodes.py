@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 LangGraph node implementations: Planner, Executor, Reporter, Critic.
 

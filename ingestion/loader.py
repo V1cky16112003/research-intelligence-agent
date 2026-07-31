@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 ArXiv metadata loader.
 
@@ -79,7 +80,7 @@ async def main() -> None:
         print("ERROR: DATABASE_URL not set and --db-url not provided", file=sys.stderr)
         sys.exit(1)
 
-    from db.connection import init_pool, get_connection
+    from db.connection import get_connection, init_pool
     from db.queries import insert_paper
 
     await init_pool(database_url=db_url)

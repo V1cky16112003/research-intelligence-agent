@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 Analytical SQL queries and CRUD operations.
 All functions accept a psycopg v3 AsyncConnection.

@@ -1,0 +1,8 @@
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+# Explicit rule selection — keeps CI stable across ruff version upgrades.
+# E/W: pycodestyle, F: pyflakes, I: isort
+select = ["E", "F", "W", "I"]
+ignore = ["E501", "E402"]

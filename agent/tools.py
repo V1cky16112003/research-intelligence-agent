@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 Agent tools: RAG retrieval, SQL analytics, web search.
 Each tool is an async function that accepts a string input and returns a string result.
@@ -28,11 +29,11 @@ async def rag_retrieval_tool(query: str, categories: str | None = None) -> str:
     Returns:
         JSON string with list of retrieved chunks and their metadata.
     """
-    from ingestion.embed import embed_query
-    from db.connection import get_connection
-    from db.queries import search_similar_chunks_hybrid
     from agent.registry import get_gateway
     from agent.reranker import rerank
+    from db.connection import get_connection
+    from db.queries import search_similar_chunks_hybrid
+    from ingestion.embed import embed_query
 
     category_list = [c.strip() for c in categories.split(",")] if categories else None
 
@@ -72,8 +73,8 @@ async def sql_analytics_tool(query_type: str, category: str | None = None) -> st
     Returns:
         JSON string with query results.
     """
-    from db.connection import get_connection
     from db import queries
+    from db.connection import get_connection
 
     try:
         async with get_connection() as conn:
