@@ -1,3 +1,7 @@
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = "--ignore=tests/integration"
+
 [tool.ruff]
 line-length = 120
 
