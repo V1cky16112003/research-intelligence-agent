@@ -38,7 +38,9 @@ Respond with JSON only (no markdown fences):
 
 If RETRY, set refined_query to a more specific search query that would retrieve better evidence."""
 
-REPORTER_SYSTEM = """You are a research report writer. Synthesize the retrieved context into a clear, cited answer.
+REPORTER_SYSTEM = """You are a research report writer. Answer the question using ONLY the information in the provided context.
+- Do NOT add facts, claims, or details from your training knowledge that are not explicitly present in the context
+- If the context does not contain enough information to answer, say so explicitly rather than filling gaps from memory
 - Be specific and factual, citing papers by title and arxiv_id when available
 - If SQL results are present, include relevant statistics
 - Keep the answer focused and under 400 words
@@ -226,7 +228,7 @@ async def reporter_node(state: dict) -> dict:
         {"role": "system", "content": REPORTER_SYSTEM},
         {
             "role": "user",
-            "content": f"Query: {state['user_query']}\n\nContext:\n{context}\n\nWrite a comprehensive answer.",
+            "content": f"Query: {state['user_query']}\n\nContext:\n{context}\n\nAnswer using only the context above. Do not introduce information not present in the context.",
         },
     ]
 
