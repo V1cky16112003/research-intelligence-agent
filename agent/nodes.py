@@ -67,10 +67,10 @@ def _extract_json(text: str) -> str:
 def _build_context(chunks: list, sql: list) -> str:
     """Build a formatted context string from retrieved chunks and SQL results."""
     parts = []
-    for i, chunk in enumerate(chunks[:6]):
+    for i, chunk in enumerate(chunks[:8]):
         title = chunk.get("title", "Unknown")
         arxiv_id = chunk.get("arxiv_id", "")
-        content = chunk.get("content", "")[:400]
+        content = chunk.get("content", "")[:600]
         parts.append(f"[{i+1}] {title} ({arxiv_id})\n{content}")
     if sql:
         parts.append(f"\nSQL Analytics Results:\n{json.dumps(sql[:10], default=str, indent=2)}")
@@ -232,7 +232,7 @@ async def reporter_node(state: dict) -> dict:
         },
     ]
 
-    resp = await gw.chat(messages, temperature=0.2, max_tokens=1024)
+    resp = await gw.chat(messages, temperature=0.0, max_tokens=1024)
     answer = resp.get("content") or "I was unable to generate an answer."
 
     # Build citations from retrieved chunks

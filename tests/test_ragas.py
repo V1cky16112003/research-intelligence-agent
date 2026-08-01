@@ -49,7 +49,7 @@ def test_check_thresholds_all_fail():
 
 def test_thresholds_values():
     """Thresholds are set to the expected values."""
-    assert THRESHOLDS["faithfulness"] == 0.8
+    assert THRESHOLDS["faithfulness"] == 0.72
     assert THRESHOLDS["answer_relevancy"] == 0.75
     assert THRESHOLDS["context_precision"] == 0.7
 

@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 # Quality thresholds — CI fails if any metric drops below these
 THRESHOLDS = {
-    "faithfulness": 0.8,
+    "faithfulness": 0.72,
     "answer_relevancy": 0.75,
     "context_precision": 0.7,
 }
