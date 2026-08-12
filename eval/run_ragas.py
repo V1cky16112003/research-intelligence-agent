@@ -103,6 +103,52 @@ def _rate_limit_method(obj, method_name: str, limiter: "_SlidingWindowRateLimite
     setattr(obj, method_name, _rate_limited)
 
 
+# Headroom under each free-tier RPM cap for the LLMGateway calls that generate
+# RAG answers during CI (Groq 30 RPM, NVIDIA NIM ~40 RPM free tier) — leaves
+# room for the gateway's own retry/backoff traffic without tripping 429s.
+GROQ_ANSWER_MAX_RPM = 25
+NIM_ANSWER_MAX_RPM = 35
+
+
+class _AsyncSlidingWindowRateLimiter:
+    """Async sliding-window limiter for gateway calls issued from the CI event loop.
+
+    Same trailing-window algorithm as `_SlidingWindowRateLimiter`, but async: the
+    RAG-answer generation loop in `run_evaluation` awaits sequentially on a single
+    event loop, so a blocking `time.sleep` would stall it — this awaits instead.
+    """
+
+    def __init__(self, max_calls: int, period_seconds: float) -> None:
+        self._max_calls = max_calls
+        self._period = period_seconds
+        self._lock = asyncio.Lock()
+        self._timestamps: deque[float] = deque()
+
+    async def acquire(self) -> None:
+        while True:
+            async with self._lock:
+                now = time.monotonic()
+                while self._timestamps and now - self._timestamps[0] >= self._period:
+                    self._timestamps.popleft()
+                if len(self._timestamps) < self._max_calls:
+                    self._timestamps.append(now)
+                    return
+                wait = self._period - (now - self._timestamps[0])
+            if wait > 0:
+                await asyncio.sleep(wait)
+
+
+def _rate_limit_async_method(obj, method_name: str, limiter: "_AsyncSlidingWindowRateLimiter") -> None:
+    """Monkey-patch a single async bound method on `obj` to acquire `limiter` before calling through."""
+    original = getattr(obj, method_name)
+
+    async def _rate_limited(*args, **kwargs):
+        await limiter.acquire()
+        return await original(*args, **kwargs)
+
+    setattr(obj, method_name, _rate_limited)
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run RAGAS evaluation over golden set")
     p.add_argument("--golden", default="eval/golden_set.json", help="Path to golden set JSON")
@@ -180,6 +226,18 @@ async def run_evaluation(args: argparse.Namespace) -> dict:
         nvidia_api_key=os.getenv("NVIDIA_NIM_API_KEY", ""),
         gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
         redis_client=redis_client,
+        nim_model="meta/llama-3.3-70b-instruct",
+        enable_gemini=False,  # Gemini free tier (5 RPM) is too small for CI — disabled for now
+    )
+    # Proactively cap outbound RPM to each provider's free-tier ceiling (Groq 30,
+    # NIM ~40) rather than relying solely on the gateway's reactive 429 backoff.
+    _rate_limit_async_method(
+        gateway._groq.chat.completions, "create",
+        _AsyncSlidingWindowRateLimiter(GROQ_ANSWER_MAX_RPM, period_seconds=60.0),
+    )
+    _rate_limit_async_method(
+        gateway._nim.chat.completions, "create",
+        _AsyncSlidingWindowRateLimiter(NIM_ANSWER_MAX_RPM, period_seconds=60.0),
     )
     # rag_retrieval_tool fetches its gateway from the module-level registry
     # (not passed as an arg) — must register it before any retrieval runs,

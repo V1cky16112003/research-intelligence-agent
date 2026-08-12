@@ -97,6 +97,47 @@ async def test_cache_hit():
 
 
 @pytest.mark.asyncio
+async def test_nim_model_override():
+    """nim_model constructor override is used for the NIM fallback call and result."""
+    gw = LLMGateway(
+        groq_api_key="fake", nvidia_api_key="fake", gemini_api_key="fake",
+        nim_model="meta/llama-3.3-70b-instruct",
+    )
+
+    call_order = []
+    async def mock_retry(client, model, messages, temperature, max_tokens, tools, provider_name):
+        call_order.append((provider_name, model))
+        if provider_name == "groq":
+            raise RateLimitError("rate limited", response=MagicMock(status_code=429), body={})
+        return _make_response("nim answer")
+
+    gw._with_retry = mock_retry
+    result = await gw.chat([{"role": "user", "content": "hi"}], cache=False)
+    assert result["provider"] == "nvidia_nim"
+    assert result["model"] == "meta/llama-3.3-70b-instruct"
+    assert call_order == [("groq", "llama-3.3-70b-versatile"), ("nvidia_nim", "meta/llama-3.3-70b-instruct")]
+
+
+@pytest.mark.asyncio
+async def test_gemini_disabled_raises_after_nim_exhausted():
+    """enable_gemini=False must skip the Gemini tier entirely — never calling it."""
+    gw = LLMGateway(
+        groq_api_key="fake", nvidia_api_key="fake", gemini_api_key="fake",
+        enable_gemini=False,
+    )
+
+    call_order = []
+    async def mock_retry(client, model, messages, temperature, max_tokens, tools, provider_name):
+        call_order.append(provider_name)
+        raise RateLimitError("rate limited", response=MagicMock(status_code=429), body={})
+
+    gw._with_retry = mock_retry
+    with pytest.raises(GatewayExhaustedError):
+        await gw.chat([{"role": "user", "content": "hi"}], cache=False)
+    assert call_order == ["groq", "nvidia_nim"]  # gemini never attempted
+
+
+@pytest.mark.asyncio
 async def test_all_three_exhausted():
     """Groq, NIM, and Gemini all fail — GatewayExhaustedError raised."""
     gw = LLMGateway(groq_api_key="fake", nvidia_api_key="fake", gemini_api_key="fake")

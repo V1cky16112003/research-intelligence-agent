@@ -5,11 +5,21 @@ import json
 import math
 import time
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from eval.run_ragas import THRESHOLDS, _mean, _rate_limit_method, _SlidingWindowRateLimiter, check_thresholds
+from eval.run_ragas import (
+    GROQ_ANSWER_MAX_RPM,
+    NIM_ANSWER_MAX_RPM,
+    THRESHOLDS,
+    _AsyncSlidingWindowRateLimiter,
+    _mean,
+    _rate_limit_async_method,
+    _rate_limit_method,
+    _SlidingWindowRateLimiter,
+    check_thresholds,
+)
 
 
 def test_golden_set_loads():
@@ -124,3 +134,56 @@ def test_rate_limit_blocks_once_cap_is_exceeded():
     elapsed = time.monotonic() - start
 
     assert elapsed >= 0.25  # had to wait for the window to clear, not instant
+
+
+def test_answer_rpm_caps_leave_headroom_under_free_tier():
+    """Groq/NIM answer-generation caps stay under their published free-tier RPM."""
+    assert GROQ_ANSWER_MAX_RPM == 25  # under Groq's 30 RPM free tier
+    assert NIM_ANSWER_MAX_RPM == 35  # under NVIDIA NIM's ~40 RPM free tier
+
+
+@pytest.mark.asyncio
+async def test_async_rate_limit_allows_calls_under_the_cap():
+    """Calls within the per-minute cap must not be delayed."""
+    mock_obj = MagicMock()
+    original_create = AsyncMock(return_value="response")
+    mock_obj.create = original_create
+    limiter = _AsyncSlidingWindowRateLimiter(max_calls=5, period_seconds=60.0)
+
+    _rate_limit_async_method(mock_obj, "create", limiter)
+
+    start = time.monotonic()
+    for _ in range(5):
+        assert await mock_obj.create() == "response"
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 1.0
+    assert original_create.call_count == 5
+
+
+@pytest.mark.asyncio
+async def test_async_rate_limit_blocks_once_cap_is_exceeded():
+    """The (max_calls + 1)th call within the window must block until it clears."""
+    # Short window so the test runs fast: 2 calls per 0.3s, instead of waiting 60s.
+    limiter = _AsyncSlidingWindowRateLimiter(max_calls=2, period_seconds=0.3)
+    await limiter.acquire()
+    await limiter.acquire()
+    start = time.monotonic()
+    await limiter.acquire()
+    elapsed = time.monotonic() - start
+
+    assert elapsed >= 0.25  # had to wait for the window to clear, not instant
+
+
+@pytest.mark.asyncio
+async def test_async_rate_limit_enforces_cap_over_a_burst_of_calls():
+    """A burst of calls well above the cap must never exceed max_calls in any trailing window."""
+    limiter = _AsyncSlidingWindowRateLimiter(max_calls=3, period_seconds=0.3)
+    call_times = []
+    for _ in range(9):
+        await limiter.acquire()
+        call_times.append(time.monotonic())
+
+    for i in range(len(call_times) - 3):
+        window = call_times[i + 3] - call_times[i]
+        assert window >= 0.29  # every 4th call must fall outside the prior window

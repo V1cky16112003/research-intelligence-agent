@@ -9,6 +9,9 @@ Features:
 - Redis response cache (TTL 1hr, SHA256 key on model+messages+temperature+max_tokens+tools)
 - Provider tagging on every response for audit logging
 - OpenAI-format tool calling passed through unchanged to all three providers
+- `nim_model` and `enable_gemini` are per-instance overrides — callers (e.g. the
+  RAGAS CI gate) can pin a different NIM model or disable the Gemini tier
+  without changing the defaults used by the production /chat path
 """
 import asyncio
 import hashlib
@@ -40,6 +43,8 @@ class LLMGateway:
         gemini_api_key: str,
         nvidia_api_key: str = "",
         redis_client=None,
+        nim_model: str = "",
+        enable_gemini: bool = True,
     ) -> None:
         self._groq = AsyncOpenAI(
             api_key=groq_api_key,
@@ -54,6 +59,8 @@ class LLMGateway:
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         )
         self._redis = redis_client
+        self._nim_model = nim_model or self.NIM_MODEL
+        self._enable_gemini = enable_gemini
 
     async def chat(
         self,
@@ -106,12 +113,17 @@ class LLMGateway:
             logger.warning("Groq exhausted (%s), falling back to NVIDIA NIM", exc)
             try:
                 result = await self._with_retry(
-                    self._nim, self.NIM_MODEL, messages, temperature, max_tokens, tools, "nvidia_nim"
+                    self._nim, self._nim_model, messages, temperature, max_tokens, tools, "nvidia_nim"
                 )
                 result["provider"] = "nvidia_nim"
-                result["model"] = self.NIM_MODEL
+                result["model"] = self._nim_model
             except Exception as exc2:
                 nim_exc = exc2
+                if not self._enable_gemini:
+                    raise GatewayExhaustedError(
+                        f"Groq and NVIDIA NIM exhausted (Gemini fallback disabled). "
+                        f"Groq: {groq_exc}. NVIDIA NIM: {nim_exc}."
+                    ) from nim_exc
                 logger.warning("NVIDIA NIM exhausted (%s), falling back to Gemini", exc2)
                 try:
                     result = await self._with_retry(
