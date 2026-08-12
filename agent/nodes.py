@@ -19,8 +19,12 @@ PLANNER_SYSTEM = """You are a research planning assistant. Given a user query, c
 
 Available tools:
 - rag_retrieval: Search ArXiv ML paper corpus semantically. Use for questions about paper content, methods, findings.
-- sql_analytics: Run analytics over the papers database. Use for counting papers, trends, publication stats.
-  query_type options: papers_by_month, query_volume, provider_latency, experiments
+- sql_analytics: Run analytics over the papers database.
+  query_type options:
+    - papers_by_month: paper counts by category/month — use for "how many papers", "papers by category", publication trends over time. Optional "category" arg (e.g. "cs.LG").
+    - query_volume: recent daily user query volume from the audit log — use for "how many questions/queries have been asked"
+    - provider_latency: LLM provider p95 latency stats — use for "how fast/slow does the system respond"
+    - experiments: RAGAS eval metrics summary (faithfulness, relevancy) — use for "how well does the system perform", evaluation quality
 - web_search: Search the web for recent or out-of-corpus information.
 
 Respond with a JSON array of steps:
