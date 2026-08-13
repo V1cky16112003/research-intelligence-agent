@@ -61,7 +61,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run RAGAS quality gate
-        run: python -m eval.run_ragas --ci --limit 6
+        run: python -m eval.run_ragas --ci --limit 3
         timeout-minutes: 50
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}

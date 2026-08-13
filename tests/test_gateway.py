@@ -151,6 +151,32 @@ async def test_all_three_exhausted():
 
 
 @pytest.mark.asyncio
+async def test_with_retry_fails_fast_on_daily_quota_error():
+    """A 'tokens per day' RateLimitError must not be retried — the quota can't clear
+    within our [1s, 4s, 16s] backoff window, so retrying just wastes ~21s per call."""
+    gw = LLMGateway(groq_api_key="fake", nvidia_api_key="fake", gemini_api_key="fake")
+
+    daily_quota_error = RateLimitError(
+        "Rate limit reached for model `llama-3.3-70b-versatile` in organization "
+        "`org_fake` service tier `on_demand` on tokens per day (TPD): Limit 100000, "
+        "Used 98963, Requested 1568. Please try again in 7m38.784s.",
+        response=MagicMock(status_code=429),
+        body={"message": "...", "type": "tokens", "code": "rate_limit_exceeded"},
+    )
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create = AsyncMock(side_effect=daily_quota_error)
+
+    with pytest.raises(RateLimitError):
+        await gw._with_retry(
+            mock_client, "llama-3.3-70b-versatile",
+            [{"role": "user", "content": "hi"}], 0.1, 512, None, "groq",
+        )
+
+    assert mock_client.chat.completions.create.call_count == 1  # no retries attempted
+
+
+@pytest.mark.asyncio
 async def test_redis_client_detection():
     """create_redis_client returns correct type based on URL scheme."""
     from agent.redis_client import LocalRedisClient, UpstashRedisClient, create_redis_client

@@ -29,6 +29,14 @@ class GatewayExhaustedError(Exception):
     """Raised when all LLM providers fail after retries."""
 
 
+def _is_daily_quota_error(exc: RateLimitError) -> bool:
+    """True if a 429 is a daily token-quota error (e.g. Groq's TPD limit), not a
+    transient per-minute rate limit. Daily quotas reset on the order of minutes to
+    hours, so retrying within our [1s, 4s, 16s] backoff window can never succeed —
+    doing so only wastes ~21s per call before falling back to the next provider."""
+    return "per day" in str(exc).lower()
+
+
 class LLMGateway:
     """Routes LLM calls: Groq (primary) → NVIDIA NIM (fallback) → Gemini 2.5 Flash (fallback)."""
 
@@ -190,6 +198,8 @@ class LLMGateway:
                 return await self._call_provider(client, model, messages, temperature, max_tokens, tools)
             except RateLimitError as exc:
                 last_exc = exc
+                if _is_daily_quota_error(exc):
+                    break  # won't clear within our retry window — fail over immediately
             except APIStatusError as exc:
                 if exc.status_code >= 500:
                     last_exc = exc
