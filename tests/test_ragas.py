@@ -11,6 +11,7 @@ import pytest
 
 from eval.run_ragas import (
     GROQ_ANSWER_MAX_RPM,
+    GROQ_JUDGE_MAX_RPM,
     NIM_ANSWER_MAX_RPM,
     THRESHOLDS,
     _AsyncSlidingWindowRateLimiter,
@@ -19,6 +20,7 @@ from eval.run_ragas import (
     _rate_limit_method,
     _SlidingWindowRateLimiter,
     check_thresholds,
+    parse_args,
 )
 
 
@@ -140,6 +142,21 @@ def test_answer_rpm_caps_leave_headroom_under_free_tier():
     """Groq/NIM answer-generation caps stay under their published free-tier RPM."""
     assert GROQ_ANSWER_MAX_RPM == 25  # under Groq's 30 RPM free tier
     assert NIM_ANSWER_MAX_RPM == 35  # under NVIDIA NIM's ~40 RPM free tier
+
+
+def test_judge_rpm_cap_leaves_headroom_under_free_tier():
+    """Groq judge-model RPM cap stays under its published free-tier 30 RPM."""
+    assert GROQ_JUDGE_MAX_RPM == 20
+
+
+def test_judge_model_defaults_to_a_groq_model_with_a_separate_quota_bucket():
+    """The RAGAS judge must default to a Groq model other than the answer-generation
+    model (llama-3.3-70b-versatile) — Groq tracks daily token quota per model, so a
+    distinct judge model keeps judging alive even when generation exhausts its own
+    quota, instead of the two competing for the same daily budget."""
+    args = parse_args([])
+    assert args.judge_model == "openai/gpt-oss-120b"
+    assert args.judge_model != "llama-3.3-70b-versatile"
 
 
 @pytest.mark.asyncio

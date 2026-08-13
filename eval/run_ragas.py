@@ -109,6 +109,12 @@ def _rate_limit_method(obj, method_name: str, limiter: "_SlidingWindowRateLimite
 GROQ_ANSWER_MAX_RPM = 25
 NIM_ANSWER_MAX_RPM = 35
 
+# The RAGAS judge runs on Groq too, but on a *different* model than answer
+# generation (openai/gpt-oss-120b vs. llama-3.3-70b-versatile) — Groq tracks
+# daily token quota per model, not per account, so judging keeps its own
+# budget even when generation exhausts llama-3.3-70b-versatile's.
+GROQ_JUDGE_MAX_RPM = 20  # under Groq's 30 RPM free tier
+
 
 class _AsyncSlidingWindowRateLimiter:
     """Async sliding-window limiter for gateway calls issued from the CI event loop.
@@ -149,15 +155,15 @@ def _rate_limit_async_method(obj, method_name: str, limiter: "_AsyncSlidingWindo
     setattr(obj, method_name, _rate_limited)
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run RAGAS evaluation over golden set")
     p.add_argument("--golden", default="eval/golden_set.json", help="Path to golden set JSON")
     p.add_argument("--ci", action="store_true", help="CI mode: exit 1 if thresholds not met")
     p.add_argument("--limit", type=int, default=20, help="Max questions to evaluate")
-    p.add_argument("--judge-model", default="meta/llama-3.1-70b-instruct", help="LLM judge model for RAGAS (NVIDIA NIM by default — Gemini's 5rpm/20-per-day free tier is too small for judging multiple metrics per sample). 70B is the only model tested that reliably returns a valid structured-output instance for RAGAS's real verification prompts — smaller/faster candidates (8B, Mixtral 8x7B) were tried and rejected: 8B consistently echoes the JSON schema instead of a filled instance under instructor's real prompting (not just occasionally — reproduced on every run tested), and Mixtral 8x7B intermittently returns NVIDIA-side 'DEGRADED function' errors when that specific model is taken offline. 70B's tradeoff is per-call latency (20-90s observed), so CI's step/job timeouts are set generously to accommodate it — see ci.yml.")
+    p.add_argument("--judge-model", default="openai/gpt-oss-120b", help="LLM judge model for RAGAS, served by Groq (not NVIDIA NIM) — NIM's free-tier queue proved too slow/unreliable for CI (individual calls observed taking 30s-15min, occasionally failing outright), while Groq answered every generation call in this same pipeline in under a second. Deliberately a *different* Groq model than answer generation's llama-3.3-70b-versatile: Groq tracks daily token quota per model, so judging keeps its own independent budget instead of competing with generation for the same 100K TPD. gpt-oss-120b was chosen over reusing llama-3.3-70b-versatile for this reason, and over smaller models because RAGAS's instructor-based structured-output prompting has previously failed against 8B-class models (echoes the JSON schema instead of filling it) — see git history for that finding on NIM's 8B.")
     p.add_argument("--mlflow-uri", default="", help="MLflow tracking URI (defaults to MLFLOW_TRACKING_URI env)")
     p.add_argument("--experiment-name", default="rag-quality-gate", help="MLflow experiment name")
-    return p.parse_args()
+    return p.parse_args(argv)
 
 
 async def get_rag_answer(question: str, gateway) -> dict:
@@ -292,13 +298,20 @@ async def run_evaluation(args: argparse.Namespace) -> dict:
         nim_key = os.getenv("NVIDIA_NIM_API_KEY", "")
         nim_base = "https://integrate.api.nvidia.com/v1"
 
-        # Shared limiter: judge-LLM calls and embedding calls both count against
-        # the same 10 RPM budget, since both hit the same NIM account/rate limit.
-        rate_limiter = _SlidingWindowRateLimiter(NIM_JUDGE_MAX_RPM, period_seconds=60.0)
+        # Judge chat completions run on Groq, not NIM — NIM's free-tier queue proved
+        # too slow/unreliable for CI (individual calls observed taking 30s-15min),
+        # while Groq answered every generation call in this pipeline in under a
+        # second. args.judge_model is deliberately a *different* Groq model than
+        # answer generation's llama-3.3-70b-versatile, since Groq tracks daily token
+        # quota per model — judging keeps its own independent budget instead of
+        # competing with generation for the same 100K TPD.
+        groq_judge_limiter = _SlidingWindowRateLimiter(GROQ_JUDGE_MAX_RPM, period_seconds=60.0)
+        groq_client = OpenAI(api_key=os.getenv("GROQ_API_KEY", ""), base_url="https://api.groq.com/openai/v1")
+        _rate_limit_method(groq_client.chat.completions, "create", groq_judge_limiter)
+        judge_llm = llm_factory(args.judge_model, client=groq_client)
 
-        nim_client = OpenAI(api_key=nim_key, base_url=nim_base)
-        _rate_limit_method(nim_client.chat.completions, "create", rate_limiter)
-        judge_llm = llm_factory(args.judge_model, client=nim_client)
+        # Embeddings still go to NIM — Groq has no embeddings endpoint.
+        nim_embed_limiter = _SlidingWindowRateLimiter(NIM_JUDGE_MAX_RPM, period_seconds=60.0)
 
         # `ragas.embeddings.embedding_factory()`'s modern interface returns a class
         # that lacks `embed_query`, which the (deprecated but still-used) singleton
@@ -315,7 +328,7 @@ async def run_evaluation(args: argparse.Namespace) -> dict:
             tiktoken_enabled=False,
             model_kwargs={"extra_body": {"input_type": "query"}},
         )
-        _rate_limit_method(nim_embeddings.client, "create", rate_limiter)
+        _rate_limit_method(nim_embeddings.client, "create", nim_embed_limiter)
         judge_embeddings = LangchainEmbeddingsWrapper(nim_embeddings)
 
         result = ragas_evaluate(
