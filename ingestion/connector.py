@@ -42,16 +42,22 @@ class ArxivAbstractConnector(SourceConnector):
     """
 
     async def fetch_documents(self, limit: int = 50_000) -> AsyncIterator[Document]:
-        """Stream papers from DB and yield as Documents."""
+        """Stream papers from DB and yield as Documents.
+
+        Skips papers that already have chunks so repeated pipeline runs are
+        additive (safe to call again with a higher limit to embed more of
+        the corpus) instead of re-embedding and duplicating existing rows.
+        """
         from db.connection import get_connection
         async with get_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    SELECT id, arxiv_id, title, authors, categories, abstract
-                    FROM papers
-                    WHERE abstract IS NOT NULL AND abstract != ''
-                    ORDER BY published_at DESC
+                    SELECT p.id, p.arxiv_id, p.title, p.authors, p.categories, p.abstract
+                    FROM papers p
+                    WHERE p.abstract IS NOT NULL AND p.abstract != ''
+                      AND NOT EXISTS (SELECT 1 FROM chunks c WHERE c.paper_id = p.id)
+                    ORDER BY p.published_at DESC
                     LIMIT %s
                     """,
                     (limit,),
