@@ -80,7 +80,13 @@ def _build_context(chunks: list, sql: list) -> str:
         content = chunk.get("content", "")[:600]
         parts.append(f"[{i+1}] {title} ({arxiv_id})\n{content}")
     if sql:
-        parts.append(f"\nSQL Analytics Results:\n{json.dumps(sql[:10], default=str, indent=2)}")
+        # No truncation here — the SQL tool itself already bounds row count
+        # (e.g. LIMIT 500 in papers_per_category_per_month). Truncating again
+        # here silently drops rows: SQL results are ordered most-recent-first,
+        # so a hard cap previously dropped exactly the older time periods a
+        # user might be asking about (e.g. "papers per month in 2023" when
+        # the most recent rows were all 2025-2026).
+        parts.append(f"\nSQL Analytics Results:\n{json.dumps(sql, default=str, indent=2)}")
     return "\n\n".join(parts) if parts else "No relevant context found in corpus."
 
 

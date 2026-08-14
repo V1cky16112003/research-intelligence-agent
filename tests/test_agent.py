@@ -127,6 +127,19 @@ async def test_reporter_produces_answer():
 # New tests — robustness and real critic loop
 # ---------------------------------------------------------------------------
 
+def test_build_context_does_not_truncate_sql_results_to_ten():
+    """_build_context must include SQL rows beyond the 10th — SQL analytics
+    queries are ordered most-recent-first, so silently truncating to 10 rows
+    drops exactly the older time periods a user might be asking about (e.g.
+    "papers per month in 2023" when the 10 most recent rows are all 2025-2026).
+    The underlying SQL query already bounds row count via LIMIT, so no
+    additional truncation is needed here."""
+    from agent.nodes import _build_context
+    sql_rows = [{"month": f"2023-{i:02d}", "count": i} for i in range(1, 16)]  # 15 rows
+    context = _build_context([], sql_rows)
+    assert "2023-15" in context  # the 15th row must not be dropped
+
+
 def test_extract_json_bare_object():
     """_extract_json pulls out a bare JSON object."""
     from agent.nodes import _extract_json
