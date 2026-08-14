@@ -34,7 +34,10 @@ For simple queries, 1-2 steps. For complex ones, up to 3 steps. Always end with 
 
 CRITIC_SYSTEM = """You are a research quality critic. Review the draft answer against the retrieved context.
 Rate the answer and decide: PASS or RETRY.
-- PASS: the draft is grounded in the context, cites sources, and addresses the question
+- PASS: the draft is grounded in the context and addresses the question. If the context contains
+  SQL Analytics Results, an answer built from those numbers is fully grounded and should PASS even
+  though it cites no paper titles — SQL analytics questions (counts, trends, stats) have no papers
+  to cite by nature, so "no paper citations" is NOT a reason to RETRY when SQL results are present.
 - RETRY: the draft is vague, contains claims unsupported by the context, or misses the key question
 
 Respond with JSON only (no markdown fences):
@@ -136,6 +139,20 @@ async def executor_node(state: dict) -> dict:
     # --- Retry path: re-retrieve with the critic's refined query ---
     refined_query = state.get("refined_query")
     if refined_query:
+        if sql_results:
+            # sql_results already answer the question — more semantic search can't
+            # improve an SQL-grounded answer, and merging in irrelevant chunks only
+            # pollutes the context the reporter uses to draft its next answer.
+            logger.info("Executor retry path — sql_results already present, skipping re-retrieval")
+            return {
+                "tool_results": tool_results_acc,
+                "tools_called": tools_called,
+                "retrieved_chunks": retrieved_chunks,
+                "sql_results": sql_results,
+                "refined_query": None,
+                "current_step": state.get("current_step", 0),
+            }
+
         logger.info("Executor retry path — refined query: %s", refined_query[:80])
         try:
             result_json = await rag_retrieval_tool(query=refined_query)
@@ -298,14 +315,28 @@ async def critic_node(state: dict) -> dict:
 
     retry_count = state.get("retry_count", 0)
     new_refined_query: str | None = None
+    final_verdict = verdict.get("verdict", "PASS")
 
-    if verdict.get("verdict") == "RETRY" and retry_count < MAX_RETRIES:
-        retry_count += 1
-        new_refined_query = verdict.get("refined_query") or state.get("user_query", "")
-        logger.info(
-            "Critic RETRY (%d/%d): %s — refined query: %s",
-            retry_count, MAX_RETRIES, verdict.get("reason", ""), new_refined_query[:80],
-        )
+    if final_verdict == "RETRY" and retry_count < MAX_RETRIES:
+        candidate = (verdict.get("refined_query") or "").strip()
+        current_query = (state.get("user_query") or "").strip()
+        if candidate and candidate != current_query:
+            retry_count += 1
+            new_refined_query = candidate
+            logger.info(
+                "Critic RETRY (%d/%d): %s — refined query: %s",
+                retry_count, MAX_RETRIES, verdict.get("reason", ""), candidate[:80],
+            )
+        else:
+            # No distinct refined query — rag_retrieval is deterministic, so
+            # retrying with the same (or no) query would repeat the exact same
+            # search and can never produce a different result. Treat as PASS
+            # instead of burning a full retry cycle for zero possible benefit.
+            logger.info(
+                "Critic RETRY requested but refined_query is empty or identical "
+                "to the original — treating as PASS"
+            )
+            final_verdict = "PASS"
     else:
         logger.info("Critic PASS: %s", verdict.get("reason", ""))
 
@@ -315,5 +346,5 @@ async def critic_node(state: dict) -> dict:
         "refined_query": new_refined_query,
         "tokens_in": state.get("tokens_in", 0) + resp.get("tokens_in", 0),
         "tokens_out": state.get("tokens_out", 0) + resp.get("tokens_out", 0),
-        "_critic_verdict": verdict.get("verdict", "PASS"),
+        "_critic_verdict": final_verdict,
     }

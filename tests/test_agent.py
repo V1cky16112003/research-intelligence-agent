@@ -335,6 +335,94 @@ async def test_executor_retry_path_merges_chunks():
     assert result["refined_query"] is None
 
 
+@pytest.mark.asyncio
+async def test_critic_retry_with_identical_refined_query_becomes_pass():
+    """Critic RETRY is downgraded to PASS when refined_query equals the original
+    query — retrying with an unchanged query would repeat the exact same
+    deterministic vector search and can never produce a different result."""
+    from agent.nodes import critic_node
+    from agent.registry import set_gateway
+    mock_gw = MagicMock()
+    mock_gw.chat = AsyncMock(return_value={
+        "content": '{"verdict": "RETRY", "reason": "vague", "refined_query": "What is BERT?"}',
+        "provider": "groq",
+        "tokens_in": 20,
+        "tokens_out": 10,
+    })
+    set_gateway(mock_gw)
+    state = {
+        "user_query": "What is BERT?",
+        "draft_answer": "BERT is a language model.",
+        "retrieved_chunks": [],
+        "sql_results": [],
+        "retry_count": 0,
+        "tokens_in": 0,
+        "tokens_out": 0,
+    }
+    result = await critic_node(state)
+    assert result["_critic_verdict"] == "PASS"
+    assert result["retry_count"] == 0
+    assert result["refined_query"] is None
+
+
+@pytest.mark.asyncio
+async def test_critic_retry_with_empty_refined_query_becomes_pass():
+    """Critic RETRY with no refined_query at all is downgraded to PASS instead
+    of falling back to the original query (which would be an equally futile
+    identical retry)."""
+    from agent.nodes import critic_node
+    from agent.registry import set_gateway
+    mock_gw = MagicMock()
+    mock_gw.chat = AsyncMock(return_value={
+        "content": '{"verdict": "RETRY", "reason": "vague", "refined_query": null}',
+        "provider": "groq",
+        "tokens_in": 20,
+        "tokens_out": 10,
+    })
+    set_gateway(mock_gw)
+    state = {
+        "user_query": "What is BERT?",
+        "draft_answer": "BERT is a language model.",
+        "retrieved_chunks": [],
+        "sql_results": [],
+        "retry_count": 0,
+        "tokens_in": 0,
+        "tokens_out": 0,
+    }
+    result = await critic_node(state)
+    assert result["_critic_verdict"] == "PASS"
+    assert result["retry_count"] == 0
+    assert result["refined_query"] is None
+
+
+@pytest.mark.asyncio
+async def test_executor_retry_path_skips_retrieval_when_sql_results_present():
+    """Executor retry path must not re-run rag_retrieval when sql_results are
+    already populated — more semantic search can't improve an SQL-grounded
+    answer, and merging in irrelevant chunks only pollutes the context the
+    reporter uses to draft its next answer."""
+    from agent.nodes import executor_node
+
+    never_call = AsyncMock(side_effect=AssertionError("rag_retrieval_tool should not be called"))
+    with patch("agent.tools.rag_retrieval_tool", never_call):
+        state = {
+            "user_query": "How many cs.LG papers were published per month in 2023?",
+            "plan": [],
+            "current_step": 1,
+            "tools_called": ["sql_analytics"],
+            "retrieved_chunks": [],
+            "sql_results": [{"month": "2023-01", "count": 42}],
+            "refined_query": "cs.LG paper counts 2023",
+        }
+        result = await executor_node(state)
+
+    never_call.assert_not_called()
+    assert result["sql_results"] == [{"month": "2023-01", "count": 42}]
+    assert result["retrieved_chunks"] == []
+    assert result["refined_query"] is None
+    assert "rag_retrieval" not in result["tools_called"]
+
+
 def test_cache_key_varies_with_max_tokens():
     """Gateway cache key differs when max_tokens changes."""
     from agent.gateway import LLMGateway
