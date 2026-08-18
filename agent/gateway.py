@@ -40,7 +40,15 @@ def _is_daily_quota_error(exc: RateLimitError) -> bool:
 class LLMGateway:
     """Routes LLM calls: Groq (primary) → NVIDIA NIM (fallback) → Gemini 2.5 Flash (fallback)."""
 
-    GROQ_MODEL = "llama-3.3-70b-versatile"
+    # Groq decommissioned its Llama chat models: `llama-3.3-70b-versatile` now 404s
+    # ("does not exist or you do not have access to it") on every request, so the
+    # primary tier failed 100% of the time and every call silently cascaded to NVIDIA
+    # NIM's slow free-tier queue — the cause of the 50s mean / 234s p95 latencies in
+    # query_audit_log. gpt-oss-120b is the strongest chat model the account can still
+    # reach (verified live: 1.5s for a planner call) and, unlike qwen3.6-27b, it keeps
+    # chain-of-thought in a separate `reasoning` field instead of emitting <think>
+    # blocks into `content`, where they would corrupt the planner/critic JSON parse.
+    GROQ_MODEL = "openai/gpt-oss-120b"
     NIM_MODEL = "meta/llama-3.1-70b-instruct"
     GEMINI_MODEL = "gemini-2.5-flash"
     RETRY_DELAYS = [1.0, 4.0, 16.0]

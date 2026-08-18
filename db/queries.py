@@ -312,10 +312,30 @@ async def log_query(conn: psycopg.AsyncConnection, **kwargs: Any) -> None:
 
 
 async def papers_per_category_per_month(
-    conn: psycopg.AsyncConnection, category: str | None = None
+    conn: psycopg.AsyncConnection,
+    category: str | None = None,
+    year: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Window function: paper count per (category, month) with recency rank."""
-    cat_filter = "AND cat = %s" if category else ""
+    """Window function: paper count per (category, month) with recency rank.
+
+    Ordering note: this used to ``ORDER BY cat, month DESC LIMIT 500``, which sorted
+    *alphabetically by category first*. The corpus has 8001 (category, month) groups
+    across 151 categories, so the LIMIT cut the result at cs.AI — every category from
+    cs.CL onward, cs.LG included, was silently absent from unfiltered results and the
+    reporter answered corpus-wide questions using astrophysics rows. Ordering by month
+    first keeps the LIMIT on the *recency* axis, which is the axis users ask about, and
+    keeps every category represented.
+    """
+    filters = []
+    params: list[Any] = []
+    if category:
+        filters.append("AND cat = %s")
+        params.append(category)
+    if year:
+        filters.append("AND EXTRACT(YEAR FROM published_at) = %s")
+        params.append(year)
+    extra_filters = " ".join(filters)
+
     sql = f"""
         SELECT
             cat,
@@ -323,14 +343,13 @@ async def papers_per_category_per_month(
             COUNT(*) AS paper_count,
             ROW_NUMBER() OVER (PARTITION BY cat ORDER BY DATE_TRUNC('month', published_at) DESC) AS recency_rank
         FROM papers, UNNEST(categories) AS cat
-        WHERE published_at IS NOT NULL {cat_filter}
+        WHERE published_at IS NOT NULL {extra_filters}
         GROUP BY cat, month
-        ORDER BY cat, month DESC
+        ORDER BY month DESC, paper_count DESC, cat
         LIMIT 500
     """
-    params = (category,) if category else ()
     async with conn.cursor() as cur:
-        await cur.execute(sql, params)
+        await cur.execute(sql, tuple(params))
         col_names = [d[0] for d in cur.description]
         rows = await cur.fetchall()
         return [dict(zip(col_names, row)) for row in rows]

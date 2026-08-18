@@ -110,9 +110,11 @@ GROQ_ANSWER_MAX_RPM = 25
 NIM_ANSWER_MAX_RPM = 35
 
 # The RAGAS judge runs on Groq too, but on a *different* model than answer
-# generation (openai/gpt-oss-120b vs. llama-3.3-70b-versatile) — Groq tracks
-# daily token quota per model, not per account, so judging keeps its own
-# budget even when generation exhausts llama-3.3-70b-versatile's.
+# generation (openai/gpt-oss-20b vs. openai/gpt-oss-120b) — Groq tracks daily
+# token quota per model, not per account, so judging keeps its own budget even
+# when generation exhausts gpt-oss-120b's. Generation moved to gpt-oss-120b when
+# Groq decommissioned llama-3.3-70b-versatile, so the judge moved down to the 20b
+# to preserve that separation rather than share one bucket.
 GROQ_JUDGE_MAX_RPM = 20  # under Groq's 30 RPM free tier
 
 
@@ -160,7 +162,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--golden", default="eval/golden_set.json", help="Path to golden set JSON")
     p.add_argument("--ci", action="store_true", help="CI mode: exit 1 if thresholds not met")
     p.add_argument("--limit", type=int, default=20, help="Max questions to evaluate")
-    p.add_argument("--judge-model", default="openai/gpt-oss-120b", help="LLM judge model for RAGAS, served by Groq (not NVIDIA NIM) — NIM's free-tier queue proved too slow/unreliable for CI (individual calls observed taking 30s-15min, occasionally failing outright), while Groq answered every generation call in this same pipeline in under a second. Deliberately a *different* Groq model than answer generation's llama-3.3-70b-versatile: Groq tracks daily token quota per model, so judging keeps its own independent budget instead of competing with generation for the same 100K TPD. gpt-oss-120b was chosen over reusing llama-3.3-70b-versatile for this reason, and over smaller models because RAGAS's instructor-based structured-output prompting has previously failed against 8B-class models (echoes the JSON schema instead of filling it) — see git history for that finding on NIM's 8B.")
+    p.add_argument("--judge-model", default="openai/gpt-oss-20b", help="LLM judge model for RAGAS, served by Groq (not NVIDIA NIM) — NIM's free-tier queue proved too slow/unreliable for CI (individual calls observed taking 30s-15min, occasionally failing outright), while Groq answered every generation call in this same pipeline in under a second. Deliberately a *different* Groq model than answer generation's openai/gpt-oss-120b: Groq tracks daily token quota per model, so judging keeps its own independent budget instead of competing with generation for the same 100K TPD. Note RAGAS's instructor-based structured output has previously failed against 8B-class models (echoes the JSON schema instead of filling it) — gpt-oss-20b is a reasoning-tuned MoE well above that class, but watch the first CI run after this change for NaN metrics.")
     p.add_argument("--mlflow-uri", default="", help="MLflow tracking URI (defaults to MLFLOW_TRACKING_URI env)")
     p.add_argument("--experiment-name", default="rag-quality-gate", help="MLflow experiment name")
     return p.parse_args(argv)

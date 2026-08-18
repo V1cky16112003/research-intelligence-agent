@@ -115,7 +115,7 @@ async def test_nim_model_override():
     result = await gw.chat([{"role": "user", "content": "hi"}], cache=False)
     assert result["provider"] == "nvidia_nim"
     assert result["model"] == "meta/llama-3.3-70b-instruct"
-    assert call_order == [("groq", "llama-3.3-70b-versatile"), ("nvidia_nim", "meta/llama-3.3-70b-instruct")]
+    assert call_order == [("groq", LLMGateway.GROQ_MODEL), ("nvidia_nim", "meta/llama-3.3-70b-instruct")]
 
 
 @pytest.mark.asyncio
@@ -189,3 +189,15 @@ async def test_redis_client_detection():
 
     none_client = await create_redis_client(None)
     assert none_client is None
+
+
+def test_groq_model_is_not_a_decommissioned_llama():
+    """Regression: Groq retired its Llama chat models, so `llama-3.3-70b-versatile`
+    began returning 404 on every call. Because the gateway treats any Groq exception
+    as "fall back", the primary tier failed silently 100% of the time and every
+    request went to NVIDIA NIM's slow free-tier queue — mean latency 50s, p95 234s,
+    and RAGAS CI timeouts. Nothing surfaced this as an error, so pin the expectation."""
+    from agent.gateway import LLMGateway
+
+    assert not LLMGateway.GROQ_MODEL.startswith("llama-")
+    assert LLMGateway.GROQ_MODEL == "openai/gpt-oss-120b"

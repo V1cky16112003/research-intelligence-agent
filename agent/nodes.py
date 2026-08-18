@@ -6,6 +6,7 @@ LangGraph node implementations: Planner, Executor, Reporter, Critic.
 Flow: START → planner → executor → reporter(draft) → critic → ┬─ RETRY → executor
                                                                └─ PASS  → END
 """
+import inspect
 import json
 import logging
 import re
@@ -21,7 +22,7 @@ Available tools:
 - rag_retrieval: Search ArXiv ML paper corpus semantically. Use for questions about paper content, methods, findings.
 - sql_analytics: Run analytics over the papers database.
   query_type options:
-    - papers_by_month: paper counts by category/month — use for "how many papers", "papers by category", publication trends over time. Optional "category" arg (e.g. "cs.LG").
+    - papers_by_month: paper counts by category/month — use for "how many papers", "papers by category", publication trends over time. Optional "category" arg (e.g. "cs.LG") and optional "year" arg (e.g. 2023). Pass no other args.
     - query_volume: recent daily user query volume from the audit log — use for "how many questions/queries have been asked"
     - provider_latency: LLM provider p95 latency stats — use for "how fast/slow does the system respond"
     - experiments: RAGAS eval metrics summary (faithfulness, relevancy) — use for "how well does the system perform", evaluation quality
@@ -30,7 +31,9 @@ Available tools:
 Respond with a JSON array of steps:
 [{"step": "description", "tool": "tool_name", "args": {"arg": "value"}}]
 
-For simple queries, 1-2 steps. For complex ones, up to 3 steps. Always end with a synthesis step using rag_retrieval or just answer directly if the query is conversational."""
+Only use argument names listed above for each tool — do not invent extra ones.
+
+For simple queries, 1-2 steps. For complex ones, up to 3 steps. Emit only steps that actually fetch data: a separate report-writing stage already synthesizes the final answer, so do NOT append a trailing "synthesize"/"summarize" step. In particular, never add a rag_retrieval step with empty args — for a pure statistics question a single sql_analytics step is the whole plan."""
 
 CRITIC_SYSTEM = """You are a research quality critic. Review the draft answer against the retrieved context.
 Rate the answer and decide: PASS or RETRY.
@@ -69,6 +72,31 @@ def _extract_json(text: str) -> str:
     if match:
         return match.group(1)
     return text.strip()
+
+
+def _filter_tool_args(tool_fn, args: dict) -> dict:
+    """Drop planner-invented kwargs the tool does not declare.
+
+    The planner is an LLM, so it emits plausible-but-undeclared argument names
+    (observed live: sql_analytics with "year" and "agg"). Calling the tool with those
+    raised TypeError, which the executor converted into an empty result — the tool
+    reported as "called" while returning nothing, which reads downstream as "the
+    corpus has no data" rather than "the call was malformed". Tools that declare
+    **kwargs opt out and receive everything.
+    """
+    if not isinstance(args, dict):
+        return {}
+    try:
+        params = inspect.signature(tool_fn).parameters
+    except (TypeError, ValueError):
+        return args
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return args
+    accepted = {k: v for k, v in args.items() if k in params}
+    dropped = set(args) - set(accepted)
+    if dropped:
+        logger.info("Dropping unsupported args %s for %s", sorted(dropped), getattr(tool_fn, "__name__", tool_fn))
+    return accepted
 
 
 def _build_context(chunks: list, sql: list) -> str:
@@ -207,6 +235,7 @@ async def executor_node(state: dict) -> dict:
             args = {"query": user_query}
 
         tool_fn = TOOL_DISPATCH[tool_name]
+        args = _filter_tool_args(tool_fn, args)
         try:
             result_json = await tool_fn(**args)
             result = json.loads(result_json)

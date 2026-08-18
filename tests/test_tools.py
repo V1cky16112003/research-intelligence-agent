@@ -170,3 +170,61 @@ async def test_graph_query_driver_error_returns_empty_results():
     result = json.loads(result_json)
     assert "error" in result
     assert result["results"] == []
+
+
+# ---------------------------------------------------------------------------
+# Planner-arg robustness — the planner is an LLM and routinely emits argument
+# names the tool signature never declared (observed live: {"query_type":
+# "papers_by_month", "category": "cs.LG", "year": 2023}). Before this, an
+# unexpected kwarg raised TypeError inside the executor, which swallowed it into
+# {"error": ..., "results": []} — the tool looked "called but returned nothing".
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_sql_analytics_tolerates_unknown_planner_args():
+    """An unexpected kwarg must degrade to a valid query, not raise TypeError."""
+    with (
+        patch("db.connection.get_connection") as mock_conn_cm,
+        patch("db.queries.papers_per_category_per_month", new_callable=AsyncMock,
+              return_value=[{"cat": "cs.LG", "paper_count": 7}]) as mock_q,
+    ):
+        mock_conn = AsyncMock()
+        mock_conn_cm.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn_cm.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        result = await TOOL_DISPATCH["sql_analytics"](
+            query_type="papers_by_month", category="cs.LG", agg="sum", nonsense_arg=123
+        )
+
+    data = json.loads(result)
+    assert "error" not in data
+    assert data["count"] == 1
+    assert mock_q.await_args.kwargs["category"] == "cs.LG"
+
+
+@pytest.mark.asyncio
+async def test_sql_analytics_forwards_year_filter():
+    """'year' is a real filter users ask for, so it must reach the SQL layer."""
+    with (
+        patch("db.connection.get_connection") as mock_conn_cm,
+        patch("db.queries.papers_per_category_per_month", new_callable=AsyncMock,
+              return_value=[]) as mock_q,
+    ):
+        mock_conn = AsyncMock()
+        mock_conn_cm.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn_cm.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        await TOOL_DISPATCH["sql_analytics"](
+            query_type="papers_by_month", category="cs.LG", year="2023"
+        )
+
+    assert mock_q.await_args.kwargs["year"] == 2023
+
+
+@pytest.mark.asyncio
+async def test_sql_analytics_rejects_unknown_query_type():
+    """Unknown query_type still returns a structured error with empty results."""
+    result = await TOOL_DISPATCH["sql_analytics"](query_type="drop_tables")
+    data = json.loads(result)
+    assert "error" in data
+    assert data["results"] == []

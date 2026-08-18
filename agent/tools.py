@@ -62,13 +62,26 @@ async def rag_retrieval_tool(query: str, categories: str | None = None) -> str:
         return json.dumps({"tool": "rag_retrieval", "error": str(e), "results": []})
 
 
-async def sql_analytics_tool(query_type: str, category: str | None = None) -> str:
+async def sql_analytics_tool(
+    query_type: str,
+    category: str | None = None,
+    year: int | str | None = None,
+    **_ignored: object,
+) -> str:
     """
     Run SQL analytics queries over the papers corpus.
 
     Args:
         query_type: One of: 'papers_by_month', 'query_volume', 'provider_latency', 'experiments'
         category: Optional ArXiv category filter (e.g. 'cs.LG') for papers_by_month.
+        year: Optional publication-year filter (e.g. 2023) for papers_by_month.
+        **_ignored: Swallows argument names the planner invented. The planner is an
+            LLM, so it routinely emits plausible-but-undeclared kwargs (observed live:
+            {"query_type": "papers_by_month", "category": "cs.LG", "agg": "sum"}).
+            Without this, such a call raised TypeError, which the executor turned into
+            {"error": ..., "results": []} — the tool reported as "called" while
+            silently returning zero rows. Degrading to the valid subset of filters is
+            far better than answering nothing.
 
     Returns:
         JSON string with query results.
@@ -76,10 +89,24 @@ async def sql_analytics_tool(query_type: str, category: str | None = None) -> st
     from db import queries
     from db.connection import get_connection
 
+    if _ignored:
+        logger.info("sql_analytics ignoring unsupported planner args: %s", sorted(_ignored))
+
+    # The planner emits years as ints or strings ("2023"); normalize, and drop
+    # anything non-numeric rather than letting it reach the query layer.
+    if year is not None:
+        try:
+            year = int(str(year).strip())
+        except (TypeError, ValueError):
+            logger.info("sql_analytics ignoring non-numeric year: %r", year)
+            year = None
+
     try:
         async with get_connection() as conn:
             if query_type == "papers_by_month":
-                results = await queries.papers_per_category_per_month(conn, category=category)
+                results = await queries.papers_per_category_per_month(
+                    conn, category=category, year=year
+                )
             elif query_type == "query_volume":
                 results = await queries.rolling_query_volume(conn, days=7)
             elif query_type == "provider_latency":

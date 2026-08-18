@@ -151,12 +151,16 @@ def test_judge_rpm_cap_leaves_headroom_under_free_tier():
 
 def test_judge_model_defaults_to_a_groq_model_with_a_separate_quota_bucket():
     """The RAGAS judge must default to a Groq model other than the answer-generation
-    model (llama-3.3-70b-versatile) — Groq tracks daily token quota per model, so a
-    distinct judge model keeps judging alive even when generation exhausts its own
-    quota, instead of the two competing for the same daily budget."""
+    model — Groq tracks daily token quota per model, so a distinct judge model keeps
+    judging alive even when generation exhausts its own quota, instead of the two
+    competing for the same daily budget. Asserted against LLMGateway.GROQ_MODEL rather
+    than a hardcoded name so that repointing generation (as when Groq decommissioned
+    llama-3.3-70b-versatile) can never silently collapse the two onto one bucket."""
+    from agent.gateway import LLMGateway
+
     args = parse_args([])
-    assert args.judge_model == "openai/gpt-oss-120b"
-    assert args.judge_model != "llama-3.3-70b-versatile"
+    assert args.judge_model == "openai/gpt-oss-20b"
+    assert args.judge_model != LLMGateway.GROQ_MODEL
 
 
 @pytest.mark.asyncio
