@@ -20,6 +20,7 @@ from eval.run_ragas import (
     _rate_limit_method,
     _SlidingWindowRateLimiter,
     check_thresholds,
+    log_to_mlflow,
     parse_args,
 )
 
@@ -208,3 +209,27 @@ async def test_async_rate_limit_enforces_cap_over_a_burst_of_calls():
     for i in range(len(call_times) - 3):
         window = call_times[i + 3] - call_times[i]
         assert window >= 0.29  # every 4th call must fall outside the prior window
+
+
+def test_mlflow_auth_sends_the_token_as_the_username(monkeypatch):
+    """DagsHub rejects the literal username "token" with 401 — verified against the live
+    API, where user=<token> and user=<dagshub-username> both return 200. Sending the
+    token as the username keeps auth working for org-owned repos too, where the owner
+    segment of DAGSHUB_REPO is not the account that issued the token."""
+    monkeypatch.setenv("DAGSHUB_TOKEN", "s3cret-token")
+    monkeypatch.setenv("DAGSHUB_REPO", "someuser/somerepo")
+    monkeypatch.delenv("MLFLOW_TRACKING_USERNAME", raising=False)
+    monkeypatch.delenv("MLFLOW_TRACKING_PASSWORD", raising=False)
+
+    fake_mlflow = MagicMock()
+    monkeypatch.setitem(__import__("sys").modules, "mlflow", fake_mlflow)
+
+    args = MagicMock()
+    args.mlflow_uri = ""
+    args.experiment_name = "test-exp"
+    args.judge_model = "openai/gpt-oss-20b"
+    log_to_mlflow({"faithfulness": 0.9, "num_questions": 3}, args)
+
+    import os
+    assert os.environ["MLFLOW_TRACKING_USERNAME"] == "s3cret-token"
+    assert os.environ["MLFLOW_TRACKING_PASSWORD"] == "s3cret-token"

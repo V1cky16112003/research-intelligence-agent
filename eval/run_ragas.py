@@ -386,10 +386,16 @@ def log_to_mlflow(metrics: dict, args: argparse.Namespace) -> None:
         )
         mlflow.set_tracking_uri(tracking_uri)
 
-        # DagsHub auth
+        # DagsHub auth. The username must be the token itself, not the literal
+        # string "token" — DagsHub 401s on that and returns a misleading
+        # "Set a password: .../user/settings/password" body, which reads like an
+        # expired credential rather than a malformed one. Verified against the live
+        # API: user=<token> and user=<dagshub-username> both return 200, user="token"
+        # returns 401. Using the token for both fields also survives org-owned repos,
+        # where the owner segment of DAGSHUB_REPO isn't the account that issued it.
         dagshub_token = os.getenv("DAGSHUB_TOKEN", "")
         if dagshub_token:
-            os.environ["MLFLOW_TRACKING_USERNAME"] = "token"
+            os.environ["MLFLOW_TRACKING_USERNAME"] = dagshub_token
             os.environ["MLFLOW_TRACKING_PASSWORD"] = dagshub_token
 
         mlflow.set_experiment(args.experiment_name)
