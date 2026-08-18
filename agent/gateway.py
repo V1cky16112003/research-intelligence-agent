@@ -50,6 +50,17 @@ class LLMGateway:
     # blocks into `content`, where they would corrupt the planner/critic JSON parse.
     GROQ_MODEL = "openai/gpt-oss-120b"
     NIM_MODEL = "meta/llama-3.1-70b-instruct"
+
+    # gpt-oss are reasoning models: they emit hidden reasoning tokens that are billed
+    # against both `max_tokens` and Groq's 8000 TPM ceiling before any content appears.
+    # At default effort a trivial reranking call burned 166 reasoning tokens; at "low"
+    # it needs 79 and returns the same answer. None of this agent's Groq calls (plan
+    # JSON, rerank ordering, report drafting, critic verdict) are deep-reasoning tasks,
+    # so "low" buys latency and headroom at no measurable quality cost. Only Groq's
+    # gpt-oss models accept this parameter — NIM (meta/*) and Gemini would 400 on it,
+    # hence the prefix guard rather than sending it unconditionally.
+    GPT_OSS_PREFIX = "openai/gpt-oss"
+    REASONING_EFFORT = "low"
     GEMINI_MODEL = "gemini-2.5-flash"
     RETRY_DELAYS = [1.0, 4.0, 16.0]
 
@@ -244,9 +255,24 @@ class LLMGateway:
         }
         if tools:
             kwargs["tools"] = tools
+        if model.startswith(self.GPT_OSS_PREFIX):
+            kwargs["reasoning_effort"] = self.REASONING_EFFORT
 
         resp = await client.chat.completions.create(**kwargs)
         msg = resp.choices[0].message
+
+        # gpt-oss models spend `max_tokens` on hidden reasoning before emitting any
+        # content, so an under-budgeted call returns finish_reason="length" with
+        # content="" and no error. Callers that json.loads() the content then fail
+        # with "Expecting value: line 1 column 1 (char 0)" and silently degrade —
+        # exactly how the reranker broke on every query without anyone noticing.
+        # Log it loudly; a truncated generation is a bug, not a valid empty answer.
+        if resp.choices[0].finish_reason == "length" and not (msg.content or "").strip():
+            logger.warning(
+                "%s returned empty content: reasoning consumed all %d max_tokens "
+                "(finish_reason=length). Raise max_tokens for this call site.",
+                model, max_tokens,
+            )
 
         tool_calls = None
         if msg.tool_calls:

@@ -310,7 +310,20 @@ async def run_evaluation(args: argparse.Namespace) -> dict:
         groq_judge_limiter = _SlidingWindowRateLimiter(GROQ_JUDGE_MAX_RPM, period_seconds=60.0)
         groq_client = OpenAI(api_key=os.getenv("GROQ_API_KEY", ""), base_url="https://api.groq.com/openai/v1")
         _rate_limit_method(groq_client.chat.completions, "create", groq_judge_limiter)
-        judge_llm = llm_factory(args.judge_model, client=groq_client)
+        # reasoning_effort="low" is load-bearing, not a tuning knob. gpt-oss emits
+        # hidden reasoning before content, and under RAGAS's json_schema structured
+        # output that reasoning can consume the whole generation, leaving Groq to
+        # reject its own empty output with 400 json_validate_failed and
+        # `failed_generation: ''`. instructor is configured for a single attempt, so
+        # that surfaces as InstructorRetryException → faithfulness=NaN → the gate
+        # fails. faithfulness is hit hardest because its NLI schema is the longest of
+        # the three metrics. Verified against a real pipeline sample: default effort
+        # raised json_validate_failed, "low" scored the sample cleanly.
+        #
+        # Do NOT "fix" this by raising max_tokens instead: Groq counts requested
+        # max_tokens against this model's 8000 TPM limit, so max_tokens=8192 turns
+        # the 400 into a 413 rate_limit_exceeded on every call.
+        judge_llm = llm_factory(args.judge_model, client=groq_client, reasoning_effort="low")
 
         # Embeddings still go to NIM — Groq has no embeddings endpoint.
         nim_embed_limiter = _SlidingWindowRateLimiter(NIM_JUDGE_MAX_RPM, period_seconds=60.0)

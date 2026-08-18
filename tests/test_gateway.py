@@ -19,6 +19,20 @@ def _make_response(content: str = "hello", provider: str = "groq") -> dict:
     }
 
 
+def _make_sdk_response(content: str = "hello", finish_reason: str = "stop") -> MagicMock:
+    """Mimics the raw OpenAI SDK response object that _call_provider parses, as opposed
+    to _make_response's already-normalized dict returned by _with_retry."""
+    resp = MagicMock()
+    choice = MagicMock()
+    choice.finish_reason = finish_reason
+    choice.message.content = content
+    choice.message.tool_calls = None
+    resp.choices = [choice]
+    resp.usage.prompt_tokens = 10
+    resp.usage.completion_tokens = 5
+    return resp
+
+
 @pytest.mark.asyncio
 async def test_groq_success():
     """Groq succeeds on first try — returns provider=groq, cached=False."""
@@ -201,3 +215,47 @@ def test_groq_model_is_not_a_decommissioned_llama():
 
     assert not LLMGateway.GROQ_MODEL.startswith("llama-")
     assert LLMGateway.GROQ_MODEL == "openai/gpt-oss-120b"
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_sent_only_to_gpt_oss_models():
+    """gpt-oss needs reasoning_effort to stop hidden reasoning eating max_tokens, but
+    NIM (meta/*) and Gemini reject the parameter — so it must be scoped by model."""
+    from agent.gateway import LLMGateway
+
+    gw = LLMGateway(groq_api_key="fake", nvidia_api_key="fake", gemini_api_key="fake")
+    seen: list[dict] = []
+
+    async def fake_create(**kwargs):
+        seen.append(kwargs)
+        return _make_sdk_response("ok")
+
+    gw._groq.chat.completions.create = fake_create
+    await gw._call_provider(gw._groq, "openai/gpt-oss-120b", [], 0.0, 512, None)
+    assert seen[-1]["reasoning_effort"] == "low"
+
+    await gw._call_provider(gw._groq, "meta/llama-3.1-70b-instruct", [], 0.0, 512, None)
+    assert "reasoning_effort" not in seen[-1]
+
+    await gw._call_provider(gw._groq, "gemini-2.5-flash", [], 0.0, 512, None)
+    assert "reasoning_effort" not in seen[-1]
+
+
+@pytest.mark.asyncio
+async def test_truncated_empty_generation_is_logged(caplog):
+    """A reasoning model that burns max_tokens returns finish_reason=length with empty
+    content and no exception. That silently broke the reranker on every query, so it
+    must at least be visible in the logs rather than passing as a valid empty answer."""
+    from agent.gateway import LLMGateway
+
+    gw = LLMGateway(groq_api_key="fake", nvidia_api_key="fake", gemini_api_key="fake")
+    truncated = _make_sdk_response("", finish_reason="length")
+
+    async def fake_create(**kwargs):
+        return truncated
+
+    gw._groq.chat.completions.create = fake_create
+    with caplog.at_level("WARNING"):
+        await gw._call_provider(gw._groq, "openai/gpt-oss-120b", [], 0.0, 128, None)
+
+    assert "empty content" in caplog.text

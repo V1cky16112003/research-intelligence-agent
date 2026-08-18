@@ -62,7 +62,13 @@ async def rerank(
         result = await gateway.chat(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
-            max_tokens=128,
+            # A ranked index list is only a few dozen tokens, but reasoning models
+            # bill hidden reasoning against this budget first: at max_tokens=128,
+            # gpt-oss-120b spent 126 of them reasoning and returned empty content,
+            # so every rerank silently fell back to unranked order. Measured need is
+            # ~97 tokens at reasoning_effort="low"; 512 leaves headroom for larger
+            # candidate sets while staying far under Groq's 8000 TPM ceiling.
+            max_tokens=512,
             cache=True,
         )
         raw = (result.get("content") or "").strip()
