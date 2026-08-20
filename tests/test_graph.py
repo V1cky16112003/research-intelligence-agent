@@ -84,9 +84,10 @@ async def test_sync_papers_to_graph_skips_papers_with_no_authors_or_categories()
 @pytest.mark.asyncio
 async def test_run_agent_omits_continuity_fields_from_initial_state():
     """run_agent()'s per-invoke state must not reset retrieved_chunks/sql_results/
-    citations — the checkpointer keys off session_id, and including these three
-    would overwrite last turn's values, breaking multi-turn follow-ups (e.g.
-    "summarize that") which rely on the prior turn's context surviving."""
+    citations/previous_user_query — the checkpointer keys off session_id, and
+    including these would overwrite last turn's values, breaking multi-turn
+    follow-ups (e.g. "summarize that") which rely on the prior turn's context
+    and query surviving."""
     import agent.graph as graph_module
 
     mock_graph = MagicMock()
@@ -102,7 +103,7 @@ async def test_run_agent_omits_continuity_fields_from_initial_state():
         graph_module._graph = original_graph
 
     sent_state = mock_graph.ainvoke.call_args[0][0]
-    for continuity_key in ("retrieved_chunks", "sql_results", "citations"):
+    for continuity_key in ("retrieved_chunks", "sql_results", "citations", "previous_user_query"):
         assert continuity_key not in sent_state, (
             f"{continuity_key!r} must be omitted so the checkpointer's prior-turn "
             "value survives into this invoke"

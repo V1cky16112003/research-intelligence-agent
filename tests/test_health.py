@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,12 +16,19 @@ async def test_lifespan_warms_embedding_model(monkeypatch):
     import app.main as main_module
 
     # database_url/neo4j_uri off so lifespan skips the real Postgres pool and
-    # Neo4j driver (unavailable/stubbed in this test environment) and exercises
-    # only the embedding warm-up path under test.
+    # Neo4j driver. LLMGateway/create_redis_client/init_graph are stubbed too —
+    # this test only cares whether the embedding model gets warmed, not whether
+    # the rest of startup succeeds with CI's blank API keys (LLMGateway's real
+    # constructor raises OpenAIError there, unrelated to what's under test).
     monkeypatch.setattr(main_module.settings, "database_url", "")
     monkeypatch.setattr(main_module.settings, "neo4j_uri", "")
 
-    with patch("ingestion.embed.get_model") as mock_get_model:
+    with (
+        patch("ingestion.embed.get_model") as mock_get_model,
+        patch("agent.redis_client.create_redis_client", AsyncMock(return_value=None)),
+        patch("agent.gateway.LLMGateway", MagicMock()),
+        patch("agent.graph.init_graph", AsyncMock()),
+    ):
         async with main_module.lifespan(main_module.app):
             pass
         mock_get_model.assert_called_once()

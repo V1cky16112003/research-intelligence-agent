@@ -38,7 +38,9 @@ Respond with a JSON array of steps:
 
 Only use argument names listed above for each tool — do not invent extra ones.
 
-For simple queries, 1-2 steps. For complex ones, up to 3 steps. Emit only steps that actually fetch data: a separate report-writing stage already synthesizes the final answer, so do NOT append a trailing "synthesize"/"summarize" step. In particular, never add a rag_retrieval step with empty args — for a pure statistics question a single sql_analytics step is the whole plan."""
+For simple queries, 1-2 steps. For complex ones, up to 3 steps. Emit only steps that actually fetch data: a separate report-writing stage already synthesizes the final answer, so do NOT append a trailing "synthesize"/"summarize" step. In particular, never add a rag_retrieval step with empty args — for a pure statistics question a single sql_analytics step is the whole plan.
+
+If the current query is a follow-up to the previous question shown below (uses a pronoun like "that"/"it", or asks to elaborate, clarify, rephrase, or summarize the prior answer) and answering it needs no new information, respond with an empty plan: []. Do NOT search for words in the follow-up itself (e.g. do not treat "summarize that" as a query about summarization) — the already-retrieved context from the previous turn is reused automatically when the plan is empty."""
 
 CRITIC_SYSTEM = """You are a research quality critic. Review the draft answer against the retrieved context.
 Rate the answer and decide: PASS or RETRY.
@@ -132,9 +134,14 @@ async def planner_node(state: dict) -> dict:
     from agent.registry import get_gateway
     gw = get_gateway()
 
+    previous_user_query = state.get("previous_user_query")
+    user_content = f"Query: {state['user_query']}"
+    if previous_user_query:
+        user_content = f"Previous question in this conversation: {previous_user_query}\n\n{user_content}"
+
     messages = [
         {"role": "system", "content": PLANNER_SYSTEM},
-        {"role": "user", "content": f"Query: {state['user_query']}"},
+        {"role": "user", "content": user_content},
     ]
 
     resp = await gw.chat(messages, temperature=0.1, max_tokens=512)
@@ -314,6 +321,7 @@ async def reporter_node(state: dict) -> dict:
         "draft_answer": answer,    # read by critic next pass
         "final_report": answer,    # served if critic PASSes
         "citations": citations,
+        "previous_user_query": state.get("user_query"),  # for next turn's planner
         "tokens_in": state.get("tokens_in", 0) + resp.get("tokens_in", 0),
         "tokens_out": state.get("tokens_out", 0) + resp.get("tokens_out", 0),
     }

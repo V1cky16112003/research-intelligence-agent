@@ -10,6 +10,10 @@ class AgentState(TypedDict):
     # Input
     user_query: str
     session_id: str
+    # Set by reporter_node to this turn's user_query so the *next* invoke's
+    # planner (loading this from the checkpoint) can recognize pronoun-style
+    # follow-ups ("summarize that") instead of treating them as a fresh topic.
+    previous_user_query: str | None
 
     # Planning
     plan: list[dict]          # [{step: str, tool: str, args: dict}]

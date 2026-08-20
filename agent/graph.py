@@ -90,18 +90,20 @@ async def run_agent(
     if _graph is None:
         raise RuntimeError("Agent graph not initialized. Call init_graph() first.")
 
-    # `retrieved_chunks`, `sql_results`, and `citations` are deliberately absent here.
-    # AsyncPostgresSaver checkpoints AgentState per session_id (thread_id); previously
-    # every field was reset on every call, which clobbered the checkpoint and made
-    # multi-turn conversations stateless in practice — a follow-up like "summarize
-    # that in one sentence" got an empty plan from the planner and then had no
-    # context to work with. Omitting these three keys lets their prior-turn values
-    # flow through from the checkpoint into this invoke, so the reporter still has
-    # last turn's retrieved context even when the planner (correctly) emits no new
-    # tool calls for a pure follow-up. Every other field is reset because it's
-    # specific to this turn's planning/critique cycle, or — for tokens_in/tokens_out/
-    # tools_called — because the audit log expects per-request values, not a
-    # session-cumulative total.
+    # `retrieved_chunks`, `sql_results`, `citations`, and `previous_user_query` are
+    # deliberately absent here. AsyncPostgresSaver checkpoints AgentState per
+    # session_id (thread_id); previously every field was reset on every call, which
+    # clobbered the checkpoint and made multi-turn conversations stateless in
+    # practice. Omitting these four keys lets their prior-turn values flow through
+    # from the checkpoint into this invoke: the planner sees what the last query
+    # was (so it can recognize a pronoun-style follow-up like "summarize that"
+    # instead of launching a fresh, wrong-topic search for it — this was observed
+    # live, where such a follow-up searched for "summarize" and silently replaced
+    # good context with irrelevant results) and the reporter still has last turn's
+    # retrieved context when the planner correctly emits no new tool calls. Every
+    # other field is reset because it's specific to this turn's planning/critique
+    # cycle, or — for tokens_in/tokens_out/tools_called — because the audit log
+    # expects per-request values, not a session-cumulative total.
     initial_state = {
         "user_query": user_query,
         "session_id": session_id,

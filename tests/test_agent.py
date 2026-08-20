@@ -121,6 +121,9 @@ async def test_reporter_produces_answer():
     assert result["final_report"] is not None
     assert len(result["citations"]) == 1
     assert result["citations"][0]["arxiv_id"] == "2017.1234"
+    # Persisted for the next turn's planner (via the checkpointer) so a
+    # follow-up like "summarize that" can be recognized as referring to this query.
+    assert result["previous_user_query"] == "What are transformers?"
 
 
 # ---------------------------------------------------------------------------
@@ -454,6 +457,33 @@ def test_cache_key_varies_with_tools():
     key_no_tools = gw._cache_key("model", messages, 0.1, 512, None)
     key_with_tools = gw._cache_key("model", messages, 0.1, 512, [{"type": "function"}])
     assert key_no_tools != key_with_tools
+
+
+@pytest.mark.asyncio
+async def test_planner_includes_previous_query_for_followups():
+    """When previous_user_query is set (carried over from last turn via the
+    checkpointer), the planner's prompt must surface it so the LLM can recognize
+    a pronoun-style follow-up instead of searching for words in the follow-up
+    itself (observed live: "summarize that" searched for "summarize" as a topic
+    and silently replaced good context with irrelevant results)."""
+    from agent.nodes import planner_node
+    from agent.registry import set_gateway
+    mock_gw = MagicMock()
+    mock_gw.chat = AsyncMock(return_value={
+        "content": "[]", "provider": "groq", "tokens_in": 10, "tokens_out": 5,
+    })
+    set_gateway(mock_gw)
+    state = {
+        "user_query": "Can you summarize that in one sentence?",
+        "previous_user_query": "What are the key findings on attention mechanisms in transformers?",
+        "session_id": "s1", "tokens_in": 0, "tokens_out": 0,
+    }
+    result = await planner_node(state)
+
+    assert result["plan"] == []
+    sent_content = mock_gw.chat.call_args[0][0][1]["content"]
+    assert "attention mechanisms in transformers" in sent_content
+    assert "Can you summarize that" in sent_content
 
 
 def test_planner_prompt_mentions_graph_query():
