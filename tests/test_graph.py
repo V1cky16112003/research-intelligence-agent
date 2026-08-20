@@ -112,3 +112,53 @@ async def test_run_agent_omits_continuity_fields_from_initial_state():
     assert sent_state["plan"] == []
     assert sent_state["tools_called"] == []
     assert sent_state["tokens_in"] == 0
+
+
+@pytest.mark.asyncio
+async def test_init_graph_enters_the_checkpointer_context_manager(monkeypatch):
+    """AsyncPostgresSaver.from_conn_string is an @asynccontextmanager — calling
+    .setup() directly on the unentered object (as init_graph() used to) raises
+    AttributeError, which was silently caught into checkpointer=None. This meant
+    the LangGraph checkpointer was never actually active in production, no
+    matter what state run_agent() sent it: multi-turn follow-ups always started
+    from a blank slate. init_graph() must __aenter__ the context manager to get
+    a real, usable saver, and close_graph() must __aexit__ it at shutdown."""
+    import sys
+    import types
+
+    from langgraph.checkpoint.base import BaseCheckpointSaver
+
+    import agent.graph as graph_module
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://fake")
+
+    # spec=BaseCheckpointSaver so build_graph()'s isinstance check (via
+    # ensure_valid_checkpointer) accepts it as a real checkpointer.
+    mock_saver = MagicMock(spec=BaseCheckpointSaver)
+    mock_saver.setup = AsyncMock()
+    mock_cm = AsyncMock()
+    mock_cm.__aenter__ = AsyncMock(return_value=mock_saver)
+    mock_cm.__aexit__ = AsyncMock(return_value=False)
+
+    # The real langgraph.checkpoint.postgres package imports psycopg internals
+    # (Capabilities, Connection, ...) at import time that conftest's bare psycopg
+    # stub doesn't provide. init_graph() imports this submodule lazily specifically
+    # to avoid that at collection time, so stub the submodule itself here rather
+    # than importing the real thing.
+    fake_module = types.ModuleType("langgraph.checkpoint.postgres.aio")
+    fake_module.AsyncPostgresSaver = MagicMock()
+    fake_module.AsyncPostgresSaver.from_conn_string = MagicMock(return_value=mock_cm)
+    monkeypatch.setitem(sys.modules, "langgraph.checkpoint.postgres.aio", fake_module)
+
+    try:
+        await graph_module.init_graph()
+        assert graph_module._checkpointer is mock_saver
+        mock_saver.setup.assert_awaited_once()
+
+        await graph_module.close_graph()
+        mock_cm.__aexit__.assert_awaited_once()
+        assert graph_module._checkpointer_cm is None
+    finally:
+        graph_module._graph = None
+        graph_module._checkpointer = None
+        graph_module._checkpointer_cm = None

@@ -58,23 +58,43 @@ def build_graph(checkpointer=None):
 # Module-level compiled graph (lazy init — set up in app lifespan)
 _graph = None
 _checkpointer = None
+_checkpointer_cm = None  # the async context manager backing _checkpointer, held open
 
 
 async def init_graph() -> None:
     """Initialize graph with PostgresSaver checkpointer. Call at app startup."""
-    global _graph, _checkpointer
+    global _graph, _checkpointer, _checkpointer_cm
     database_url = os.getenv("DATABASE_URL", "")
     if database_url:
         try:
             from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-            _checkpointer = AsyncPostgresSaver.from_conn_string(database_url)
+            # from_conn_string is an @asynccontextmanager — it yields a connected
+            # saver and closes the connection when the `async with` block exits.
+            # Calling .setup() directly on the unentered context manager (as this
+            # used to) raises AttributeError, which the except below silently
+            # swallowed into checkpointer=None: multi-turn state was never
+            # actually persisted in production, no matter what run_agent() sent
+            # it. Entering it manually here and holding it open for the app's
+            # lifetime (closed in app.main's lifespan shutdown) keeps the
+            # connection alive across requests, same as db.connection's pool.
+            _checkpointer_cm = AsyncPostgresSaver.from_conn_string(database_url)
+            _checkpointer = await _checkpointer_cm.__aenter__()
             await _checkpointer.setup()
             logger.info("LangGraph PostgresSaver checkpointer initialized")
         except Exception as e:
             logger.warning("Could not init PostgresSaver: %s — using in-memory", e)
             _checkpointer = None
+            _checkpointer_cm = None
     _graph = build_graph(checkpointer=_checkpointer)
     logger.info("LangGraph agent graph compiled")
+
+
+async def close_graph() -> None:
+    """Close the checkpointer's held-open connection. Call at app shutdown."""
+    global _checkpointer_cm
+    if _checkpointer_cm is not None:
+        await _checkpointer_cm.__aexit__(None, None, None)
+        _checkpointer_cm = None
 
 
 async def run_agent(
