@@ -55,46 +55,36 @@ def build_graph(checkpointer=None):
     return workflow.compile(checkpointer=checkpointer)
 
 
-# Module-level compiled graph (lazy init — set up in app lifespan)
+# Module-level fallback graph — only used when DATABASE_URL is unset (no
+# checkpointing possible/needed). When DATABASE_URL is set, run_agent() builds a
+# fresh graph with a freshly-opened checkpointer connection on every call; see
+# the comment on init_graph() for why.
 _graph = None
-_checkpointer = None
-_checkpointer_cm = None  # the async context manager backing _checkpointer, held open
+_checkpointer_schema_ready = False  # avoids re-running the idempotent-but-not-free setup() every call
 
 
 async def init_graph() -> None:
-    """Initialize graph with PostgresSaver checkpointer. Call at app startup."""
-    global _graph, _checkpointer, _checkpointer_cm
+    """Prepare the graph. Call at app startup.
+
+    When DATABASE_URL is set, the checkpointer connection is intentionally NOT
+    opened here and held for the app's lifetime — an earlier version of this
+    function did that (entering AsyncPostgresSaver.from_conn_string()'s context
+    manager once at startup), and it broke in production: Neon's serverless free
+    tier silently drops long-idle connections, and a single held raw psycopg
+    connection has no reconnect logic, so the first idle period after a while
+    caused every subsequent /chat request to fail instantly with "the connection
+    is closed" until the process restarted. AsyncPostgresSaver.from_conn_string()
+    is an @asynccontextmanager specifically so it can be entered fresh per use;
+    run_agent() does that per call instead. Without DATABASE_URL, falls back to
+    a single in-memory (uncheckpointed) graph built once here.
+    """
+    global _graph
     database_url = os.getenv("DATABASE_URL", "")
-    if database_url:
-        try:
-            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-            # from_conn_string is an @asynccontextmanager — it yields a connected
-            # saver and closes the connection when the `async with` block exits.
-            # Calling .setup() directly on the unentered context manager (as this
-            # used to) raises AttributeError, which the except below silently
-            # swallowed into checkpointer=None: multi-turn state was never
-            # actually persisted in production, no matter what run_agent() sent
-            # it. Entering it manually here and holding it open for the app's
-            # lifetime (closed in app.main's lifespan shutdown) keeps the
-            # connection alive across requests, same as db.connection's pool.
-            _checkpointer_cm = AsyncPostgresSaver.from_conn_string(database_url)
-            _checkpointer = await _checkpointer_cm.__aenter__()
-            await _checkpointer.setup()
-            logger.info("LangGraph PostgresSaver checkpointer initialized")
-        except Exception as e:
-            logger.warning("Could not init PostgresSaver: %s — using in-memory", e)
-            _checkpointer = None
-            _checkpointer_cm = None
-    _graph = build_graph(checkpointer=_checkpointer)
-    logger.info("LangGraph agent graph compiled")
-
-
-async def close_graph() -> None:
-    """Close the checkpointer's held-open connection. Call at app shutdown."""
-    global _checkpointer_cm
-    if _checkpointer_cm is not None:
-        await _checkpointer_cm.__aexit__(None, None, None)
-        _checkpointer_cm = None
+    if not database_url:
+        _graph = build_graph(checkpointer=None)
+        logger.info("LangGraph agent graph compiled (no DATABASE_URL — uncheckpointed)")
+    else:
+        logger.info("LangGraph agent will use a per-request PostgresSaver checkpointer")
 
 
 async def run_agent(
@@ -107,8 +97,8 @@ async def run_agent(
     Returns:
         {final_report, citations, sql_results, tools_called, provider, tokens_in, tokens_out}
     """
-    if _graph is None:
-        raise RuntimeError("Agent graph not initialized. Call init_graph() first.")
+    global _checkpointer_schema_ready
+    database_url = os.getenv("DATABASE_URL", "")
 
     # `retrieved_chunks`, `sql_results`, `citations`, and `previous_user_query` are
     # deliberately absent here. AsyncPostgresSaver checkpoints AgentState per
@@ -145,7 +135,18 @@ async def run_agent(
     config = {"configurable": {"thread_id": session_id}}
 
     try:
-        final_state = await _graph.ainvoke(initial_state, config=config)
+        if database_url:
+            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+            async with AsyncPostgresSaver.from_conn_string(database_url) as checkpointer:
+                if not _checkpointer_schema_ready:
+                    await checkpointer.setup()
+                    _checkpointer_schema_ready = True
+                graph = build_graph(checkpointer=checkpointer)
+                final_state = await graph.ainvoke(initial_state, config=config)
+        else:
+            if _graph is None:
+                raise RuntimeError("Agent graph not initialized. Call init_graph() first.")
+            final_state = await _graph.ainvoke(initial_state, config=config)
     except Exception as e:
         logger.error("Agent graph failed: %s", e, exc_info=True)
         raise

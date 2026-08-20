@@ -107,9 +107,6 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    from agent.graph import close_graph
-    await close_graph()
-
     if settings.database_url:
         from db.connection import close_pool
         await close_pool()

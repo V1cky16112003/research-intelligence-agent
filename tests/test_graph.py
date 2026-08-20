@@ -115,14 +115,15 @@ async def test_run_agent_omits_continuity_fields_from_initial_state():
 
 
 @pytest.mark.asyncio
-async def test_init_graph_enters_the_checkpointer_context_manager(monkeypatch):
-    """AsyncPostgresSaver.from_conn_string is an @asynccontextmanager — calling
-    .setup() directly on the unentered object (as init_graph() used to) raises
-    AttributeError, which was silently caught into checkpointer=None. This meant
-    the LangGraph checkpointer was never actually active in production, no
-    matter what state run_agent() sent it: multi-turn follow-ups always started
-    from a blank slate. init_graph() must __aenter__ the context manager to get
-    a real, usable saver, and close_graph() must __aexit__ it at shutdown."""
+async def test_run_agent_opens_a_fresh_checkpointer_connection_per_call(monkeypatch):
+    """An earlier version held one AsyncPostgresSaver connection open for the
+    app's entire lifetime (entered once in init_graph() at startup). That broke
+    in production: Neon's serverless free tier silently drops long-idle
+    connections, and a single held raw psycopg connection has no reconnect
+    logic, so the first idle period caused every subsequent /chat request to
+    fail instantly with "the connection is closed" until the process restarted.
+    run_agent() must instead enter AsyncPostgresSaver.from_conn_string()'s
+    context manager fresh on every call and let it close when the call ends."""
     import sys
     import types
 
@@ -131,6 +132,7 @@ async def test_init_graph_enters_the_checkpointer_context_manager(monkeypatch):
     import agent.graph as graph_module
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://fake")
+    graph_module._checkpointer_schema_ready = False
 
     # spec=BaseCheckpointSaver so build_graph()'s isinstance check (via
     # ensure_valid_checkpointer) accepts it as a real checkpointer.
@@ -142,23 +144,33 @@ async def test_init_graph_enters_the_checkpointer_context_manager(monkeypatch):
 
     # The real langgraph.checkpoint.postgres package imports psycopg internals
     # (Capabilities, Connection, ...) at import time that conftest's bare psycopg
-    # stub doesn't provide. init_graph() imports this submodule lazily specifically
+    # stub doesn't provide. run_agent() imports this submodule lazily specifically
     # to avoid that at collection time, so stub the submodule itself here rather
     # than importing the real thing.
     fake_module = types.ModuleType("langgraph.checkpoint.postgres.aio")
+    from_conn_string_mock = MagicMock(return_value=mock_cm)
     fake_module.AsyncPostgresSaver = MagicMock()
-    fake_module.AsyncPostgresSaver.from_conn_string = MagicMock(return_value=mock_cm)
+    fake_module.AsyncPostgresSaver.from_conn_string = from_conn_string_mock
     monkeypatch.setitem(sys.modules, "langgraph.checkpoint.postgres.aio", fake_module)
 
-    try:
-        await graph_module.init_graph()
-        assert graph_module._checkpointer is mock_saver
+    with patch("agent.registry.get_gateway"):
+        try:
+            await graph_module.run_agent("hello", "session-1")
+        except Exception:
+            pass  # planner/executor calls aren't mocked here — only the checkpointer lifecycle matters
+
+        # A fresh connection was opened and closed for this single call.
+        from_conn_string_mock.assert_called_once_with("postgresql://fake")
+        mock_cm.__aenter__.assert_awaited_once()
+        mock_cm.__aexit__.assert_awaited_once()
         mock_saver.setup.assert_awaited_once()
 
-        await graph_module.close_graph()
-        mock_cm.__aexit__.assert_awaited_once()
-        assert graph_module._checkpointer_cm is None
-    finally:
-        graph_module._graph = None
-        graph_module._checkpointer = None
-        graph_module._checkpointer_cm = None
+        # A second call reuses the schema-ready flag (setup is idempotent but not
+        # free) while still opening its own fresh connection.
+        try:
+            await graph_module.run_agent("hello again", "session-1")
+        except Exception:
+            pass
+        assert from_conn_string_mock.call_count == 2
+        mock_saver.setup.assert_awaited_once()  # still only once
+    graph_module._checkpointer_schema_ready = False
