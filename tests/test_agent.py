@@ -454,3 +454,16 @@ def test_cache_key_varies_with_tools():
     key_no_tools = gw._cache_key("model", messages, 0.1, 512, None)
     key_with_tools = gw._cache_key("model", messages, 0.1, 512, [{"type": "function"}])
     assert key_no_tools != key_with_tools
+
+
+def test_planner_prompt_mentions_graph_query():
+    """graph_query is registered in TOOL_DISPATCH but was missing from the planner's
+    tool list, so the planner could never select it even for queries its Cypher
+    templates answer correctly (e.g. "papers in category cs.CL")."""
+    from agent.nodes import PLANNER_SYSTEM
+    from agent.tools import TOOL_DISPATCH
+
+    assert "graph_query" in TOOL_DISPATCH
+    assert "graph_query" in PLANNER_SYSTEM
+    for template in ("papers_by_author", "coauthors", "papers_by_category"):
+        assert template in PLANNER_SYSTEM

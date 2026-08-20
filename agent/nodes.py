@@ -27,6 +27,11 @@ Available tools:
     - provider_latency: LLM provider p95 latency stats — use for "how fast/slow does the system respond"
     - experiments: RAGAS eval metrics summary (faithfulness, relevancy) — use for "how well does the system perform", evaluation quality
 - web_search: Search the web for recent or out-of-corpus information.
+- graph_query: Answer relational questions via the co-authorship/category knowledge graph.
+  query_type options (pass "value" arg with the author name or category code):
+    - papers_by_author: other papers by a given author — use for "what else has X published"
+    - coauthors: an author's co-authors — use for "who has X worked with", "collaborators of X"
+    - papers_by_category: papers in a given category (e.g. "cs.LG") — use for "what papers are in category X", "papers about subfield X" when the user names a category code, not when they describe a topic (use rag_retrieval for topic descriptions)
 
 Respond with a JSON array of steps:
 [{"step": "description", "tool": "tool_name", "args": {"arg": "value"}}]

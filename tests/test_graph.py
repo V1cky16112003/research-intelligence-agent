@@ -79,3 +79,35 @@ async def test_sync_papers_to_graph_skips_papers_with_no_authors_or_categories()
 
     assert count == 1
     mock_session.run.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_run_agent_omits_continuity_fields_from_initial_state():
+    """run_agent()'s per-invoke state must not reset retrieved_chunks/sql_results/
+    citations — the checkpointer keys off session_id, and including these three
+    would overwrite last turn's values, breaking multi-turn follow-ups (e.g.
+    "summarize that") which rely on the prior turn's context surviving."""
+    import agent.graph as graph_module
+
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(return_value={
+        "final_report": "answer", "citations": [], "sql_results": None,
+        "tools_called": [], "llm_provider": "groq", "tokens_in": 1, "tokens_out": 1,
+    })
+    original_graph = graph_module._graph
+    graph_module._graph = mock_graph
+    try:
+        await graph_module.run_agent("summarize that in one sentence", "session-1")
+    finally:
+        graph_module._graph = original_graph
+
+    sent_state = mock_graph.ainvoke.call_args[0][0]
+    for continuity_key in ("retrieved_chunks", "sql_results", "citations"):
+        assert continuity_key not in sent_state, (
+            f"{continuity_key!r} must be omitted so the checkpointer's prior-turn "
+            "value survives into this invoke"
+        )
+    # Per-turn fields must still reset every call.
+    assert sent_state["plan"] == []
+    assert sent_state["tools_called"] == []
+    assert sent_state["tokens_in"] == 0

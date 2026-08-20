@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -88,6 +89,19 @@ async def lifespan(app: FastAPI):
         logger.info("Neo4j graph driver ready")
     else:
         logger.warning("NEO4J_URI not set — graph_query tool will error gracefully if invoked")
+
+    # Embedding model — warmed here instead of lazily on first request. Loading
+    # nomic-embed-text-v2-moe takes 10-30s on a fresh container. Without this, the
+    # first rag_retrieval call after a Hugging Face Space wakes from sleep raced
+    # (and lost to) the agent's retry/timeout budget, silently returning zero
+    # chunks — the user saw "no information found" for a query the corpus can
+    # answer, and it looked fine again on the very next request once warm.
+    try:
+        from ingestion.embed import get_model
+        await asyncio.to_thread(get_model)
+        logger.info("Embedding model warmed")
+    except Exception as e:
+        logger.warning("Embedding model warm-up failed, will lazy-load on first request: %s", e)
 
     logger.info("Research agent ready")
     yield
