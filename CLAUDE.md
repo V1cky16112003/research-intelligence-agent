@@ -29,6 +29,9 @@ DATABASE_URL="..." PYTHONPATH=. python3 -m ingestion.pipeline --limit 10000 --ba
 # Apply hybrid search schema migration (tsvector + GIN index for BM25)
 psql $DATABASE_URL -f db/migrations/001_contextual_retrieval.sql
 
+# Apply the LLM cost/latency observability migration (llm_call_log table + views)
+psql $DATABASE_URL -f db/migrations/002_llm_call_log.sql
+
 # Sync papers (authors, categories) into the Neo4j knowledge graph
 NEO4J_URI="..." NEO4J_USER="..." NEO4J_PASSWORD="..." DATABASE_URL="..." PYTHONPATH=. python3 -m graph.graph_sync --limit 10000
 
@@ -58,7 +61,7 @@ The Critic node returns `RETRY` or `PASS`; the graph loops back to Executor up t
 
 ### API (`app/main.py`)
 
-`Settings` (pydantic-settings) reads from `.env`. Redis URL is assembled at runtime from either `REDIS_URL` or `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`. Every `/chat` request writes a row to `query_audit_log` (latency, tokens, tools called, retrieved chunk IDs).
+`Settings` (pydantic-settings) reads from `.env`. Redis URL is assembled at runtime from either `REDIS_URL` or `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`. Every `/chat` request writes a row to `query_audit_log` (latency, tokens, tools called, retrieved chunk IDs) plus one `llm_call_log` row per LLM call (node, provider, cost, latency, retry flag — see `docs/cost_latency_observability.md`). `GET /analytics/cost` exposes the aggregated cost/latency-by-node and retry-overhead dashboard data.
 
 ### Database (`db/`)
 

@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 import random
+import time
 from typing import Any
 
 from openai import APIStatusError, AsyncOpenAI, RateLimitError
@@ -27,6 +28,27 @@ logger = logging.getLogger(__name__)
 
 class GatewayExhaustedError(Exception):
     """Raised when all LLM providers fail after retries."""
+
+
+# Published per-token pricing (USD per 1M tokens) for cost estimation. Groq/NIM
+# free-tier usage on this project's account is actually $0, but modeling published
+# rates makes cost visible now and stays correct if/when a paid tier is used —
+# tracking "$0 forever" would hide the very routing signal this dashboard exists
+# to surface. Unknown models fall back to (0.0, 0.0) rather than raising, so a new
+# model showing up mid-cascade never breaks the chat path.
+PRICING_PER_1M_TOKENS: dict[str, tuple[float, float]] = {
+    # (prompt, completion) — Groq gpt-oss-120b published rate
+    "openai/gpt-oss-120b": (0.15, 0.75),
+    # NVIDIA NIM hosted Llama 3.1 70B — comparable third-party hosted rate
+    "meta/llama-3.1-70b-instruct": (0.35, 0.40),
+    "gemini-2.5-flash": (0.30, 2.50),
+}
+
+
+def estimate_cost_usd(model: str, tokens_in: int, tokens_out: int) -> float:
+    """Estimate $ cost for one call from published per-1M-token pricing."""
+    price_in, price_out = PRICING_PER_1M_TOKENS.get(model, (0.0, 0.0))
+    return (tokens_in / 1_000_000) * price_in + (tokens_out / 1_000_000) * price_out
 
 
 def _is_daily_quota_error(exc: RateLimitError) -> bool:
@@ -97,9 +119,16 @@ class LLMGateway:
         max_tokens: int = 2048,
         tools: list[dict] | None = None,
         cache: bool = True,
+        node: str = "unknown",
+        is_retry: bool = False,
     ) -> dict[str, Any]:
         """
         Call the LLM with automatic 3-tier fallback.
+
+        `node` and `is_retry` carry no routing logic — they're pass-through tags for
+        cost/latency observability, letting the caller (a LangGraph node) attribute
+        this call to itself and, if it's running because the Critic issued a RETRY,
+        flag it so retry overhead can be reported separately from the happy path.
 
         Returns:
             {
@@ -109,11 +138,17 @@ class LLMGateway:
                 "model": str,
                 "tokens_in": int,
                 "tokens_out": int,
+                "cost_usd": float,
+                "latency_ms": int,
+                "node": str,
+                "is_retry": bool,
                 "cached": bool,
             }
         Raises:
             GatewayExhaustedError: if Groq, NVIDIA NIM, and Gemini all fail.
         """
+        start = time.monotonic()
+
         # Cache check
         cache_key = self._cache_key(model, messages, temperature, max_tokens, tools)
         if cache and self._redis:
@@ -122,6 +157,10 @@ class LLMGateway:
                 if cached:
                     result = json.loads(cached)
                     result["cached"] = True
+                    result["node"] = node
+                    result["is_retry"] = is_retry
+                    result["cost_usd"] = 0.0  # served from cache — no provider call, no cost
+                    result["latency_ms"] = int((time.monotonic() - start) * 1000)
                     return result
             except Exception:
                 pass  # Cache miss on error — proceed
@@ -167,12 +206,20 @@ class LLMGateway:
 
         result["cached"] = False
 
-        # Store in cache
+        # Store in cache — before the node/is_retry/cost/latency tags are attached,
+        # so a cache hit for the same prompt from a *different* node or retry state
+        # doesn't replay stale attribution; those tags are filled in fresh above and
+        # below on every call, hit or miss.
         if cache and self._redis:
             try:
                 await self._redis.set(cache_key, json.dumps(result), ttl=3600)
             except Exception:
                 pass  # Don't fail on cache write error
+
+        result["node"] = node
+        result["is_retry"] = is_retry
+        result["cost_usd"] = estimate_cost_usd(result["model"], result["tokens_in"], result["tokens_out"])
+        result["latency_ms"] = int((time.monotonic() - start) * 1000)
 
         return result
 

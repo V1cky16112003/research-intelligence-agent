@@ -129,6 +129,7 @@ async def run_agent(
         "llm_provider": None,
         "tokens_in": 0,
         "tokens_out": 0,
+        "llm_calls": [],
         "_critic_verdict": "PASS",
     }
 
@@ -159,4 +160,5 @@ async def run_agent(
         "provider": final_state.get("llm_provider", "unknown"),
         "tokens_in": final_state.get("tokens_in", 0),
         "tokens_out": final_state.get("tokens_out", 0),
+        "llm_calls": final_state.get("llm_calls", []),
     }

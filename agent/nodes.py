@@ -26,6 +26,8 @@ Available tools:
     - query_volume: recent daily user query volume from the audit log — use for "how many questions/queries have been asked"
     - provider_latency: LLM provider p95 latency stats — use for "how fast/slow does the system respond"
     - experiments: RAGAS eval metrics summary (faithfulness, relevancy) — use for "how well does the system perform", evaluation quality
+    - cost_by_node: $ cost and latency per agent node (planner/executor/critic/reporter) per day — use for "how much does this cost", "which node is slow/expensive"
+    - retry_overhead: cost/latency caused by Critic-triggered retries vs the happy path — use for "how much do retries cost"
 - web_search: Search the web for recent or out-of-corpus information.
 - graph_query: Answer relational questions via the co-authorship/category knowledge graph.
   query_type options (pass "value" arg with the author name or category code):
@@ -106,6 +108,22 @@ def _filter_tool_args(tool_fn, args: dict) -> dict:
     return accepted
 
 
+def _call_record(resp: dict) -> dict:
+    """Extract the cost/latency fields the gateway attached to a chat() response
+    into a flat record for the llm_calls accumulator (see state.py)."""
+    return {
+        "node": resp.get("node", "unknown"),
+        "provider": resp.get("provider"),
+        "model": resp.get("model"),
+        "tokens_in": resp.get("tokens_in", 0),
+        "tokens_out": resp.get("tokens_out", 0),
+        "cost_usd": resp.get("cost_usd", 0.0),
+        "latency_ms": resp.get("latency_ms", 0),
+        "is_retry": resp.get("is_retry", False),
+        "cached": resp.get("cached", False),
+    }
+
+
 def _build_context(chunks: list, sql: list) -> str:
     """Build a formatted context string from retrieved chunks and SQL results."""
     parts = []
@@ -144,7 +162,7 @@ async def planner_node(state: dict) -> dict:
         {"role": "user", "content": user_content},
     ]
 
-    resp = await gw.chat(messages, temperature=0.1, max_tokens=512)
+    resp = await gw.chat(messages, temperature=0.1, max_tokens=512, node="planner")
     provider = resp["provider"]
     content = resp.get("content") or "[]"
 
@@ -163,6 +181,7 @@ async def planner_node(state: dict) -> dict:
         "llm_provider": provider,
         "tokens_in": state.get("tokens_in", 0) + resp.get("tokens_in", 0),
         "tokens_out": state.get("tokens_out", 0) + resp.get("tokens_out", 0),
+        "llm_calls": [_call_record(resp)],
     }
 
 
@@ -300,7 +319,8 @@ async def reporter_node(state: dict) -> dict:
         },
     ]
 
-    resp = await gw.chat(messages, temperature=0.0, max_tokens=1024)
+    is_retry = state.get("retry_count", 0) > 0
+    resp = await gw.chat(messages, temperature=0.0, max_tokens=1024, node="reporter", is_retry=is_retry)
     answer = resp.get("content") or "I was unable to generate an answer."
 
     # Build citations from retrieved chunks
@@ -324,6 +344,7 @@ async def reporter_node(state: dict) -> dict:
         "previous_user_query": state.get("user_query"),  # for next turn's planner
         "tokens_in": state.get("tokens_in", 0) + resp.get("tokens_in", 0),
         "tokens_out": state.get("tokens_out", 0) + resp.get("tokens_out", 0),
+        "llm_calls": [_call_record(resp)],
     }
 
 
@@ -353,7 +374,8 @@ async def critic_node(state: dict) -> dict:
         },
     ]
 
-    resp = await gw.chat(messages, temperature=0.0, max_tokens=256)
+    is_retry = state.get("retry_count", 0) > 0
+    resp = await gw.chat(messages, temperature=0.0, max_tokens=256, node="critic", is_retry=is_retry)
     content = resp.get("content") or '{"verdict": "PASS", "reason": "proceeding", "refined_query": null}'
 
     try:
@@ -395,4 +417,5 @@ async def critic_node(state: dict) -> dict:
         "tokens_in": state.get("tokens_in", 0) + resp.get("tokens_in", 0),
         "tokens_out": state.get("tokens_out", 0) + resp.get("tokens_out", 0),
         "_critic_verdict": final_verdict,
+        "llm_calls": [_call_record(resp)],
     }

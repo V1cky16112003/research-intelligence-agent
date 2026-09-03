@@ -311,6 +311,66 @@ async def log_query(conn: psycopg.AsyncConnection, **kwargs: Any) -> None:
     logger.debug("Logged query for session %s", kwargs.get("session_id"))
 
 
+async def log_llm_calls(conn: psycopg.AsyncConnection, session_id: str, calls: list[dict[str, Any]]) -> None:
+    """Bulk insert per-LLM-call cost/latency records for one /chat request."""
+    if not calls:
+        return
+    sql = """
+        INSERT INTO llm_call_log (
+            session_id, node, provider, model, tokens_in, tokens_out,
+            cost_usd, latency_ms, is_retry, cached
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """
+    params = [
+        (
+            session_id,
+            c.get("node", "unknown"),
+            c.get("provider"),
+            c.get("model"),
+            c.get("tokens_in", 0),
+            c.get("tokens_out", 0),
+            c.get("cost_usd", 0.0),
+            c.get("latency_ms", 0),
+            c.get("is_retry", False),
+            c.get("cached", False),
+        )
+        for c in calls
+    ]
+    async with conn.cursor() as cur:
+        await cur.executemany(sql, params)
+    logger.debug("Logged %d llm_call_log rows for session %s", len(calls), session_id)
+
+
+async def llm_cost_by_node(conn: psycopg.AsyncConnection, days: int = 30) -> list[dict[str, Any]]:
+    """SELECT * FROM llm_cost_latency view, last N days."""
+    sql = """
+        SELECT *
+        FROM llm_cost_latency
+        WHERE day >= NOW() - (%s || ' days')::interval
+        ORDER BY day DESC, node, provider
+    """
+    async with conn.cursor() as cur:
+        await cur.execute(sql, (days,))
+        col_names = [d[0] for d in cur.description]
+        rows = await cur.fetchall()
+        return [dict(zip(col_names, row)) for row in rows]
+
+
+async def retry_overhead_summary(conn: psycopg.AsyncConnection, days: int = 30) -> list[dict[str, Any]]:
+    """SELECT * FROM llm_retry_overhead view, last N days."""
+    sql = """
+        SELECT *
+        FROM llm_retry_overhead
+        WHERE day >= NOW() - (%s || ' days')::interval
+        ORDER BY day DESC, is_retry
+    """
+    async with conn.cursor() as cur:
+        await cur.execute(sql, (days,))
+        col_names = [d[0] for d in cur.description]
+        rows = await cur.fetchall()
+        return [dict(zip(col_names, row)) for row in rows]
+
+
 async def papers_per_category_per_month(
     conn: psycopg.AsyncConnection,
     category: str | None = None,

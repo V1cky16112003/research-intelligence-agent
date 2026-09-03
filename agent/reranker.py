@@ -70,6 +70,7 @@ async def rerank(
             # candidate sets while staying far under Groq's 8000 TPM ceiling.
             max_tokens=512,
             cache=True,
+            node="executor",
         )
         raw = (result.get("content") or "").strip()
 

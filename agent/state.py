@@ -41,6 +41,9 @@ class AgentState(TypedDict):
     llm_provider: str | None
     tokens_in: int
     tokens_out: int
+    # Per-call cost/latency records, tagged by node and retry status — accumulated
+    # across the executor/reporter/critic retry loop for the cost/latency dashboard.
+    llm_calls: Annotated[list[dict], operator.add]
 
     # Internal control (not checkpointed as objects, kept as plain values)
     _critic_verdict: str

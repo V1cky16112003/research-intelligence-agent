@@ -157,7 +157,7 @@ async def chat(req: ChatRequest, request: Request):
         if settings.database_url:
             try:
                 from db.connection import get_connection
-                from db.queries import log_query
+                from db.queries import log_llm_calls, log_query
                 async with get_connection() as conn:
                     await log_query(
                         conn,
@@ -175,6 +175,7 @@ async def chat(req: ChatRequest, request: Request):
                             if c.get("chunk_id")
                         ],
                     )
+                    await log_llm_calls(conn, session_id=session_id, calls=result.get("llm_calls", []))
                     await conn.commit()
             except Exception as e:
                 logger.warning("Audit log failed: %s", e)
@@ -201,3 +202,21 @@ async def chat(req: ChatRequest, request: Request):
 @app.get("/metrics")
 async def metrics():
     return {"total_queries": _query_counter, "uptime_seconds": time.time() - START_TIME}
+
+
+@app.get("/analytics/cost")
+async def analytics_cost(days: int = 30):
+    """Cost/latency dashboard data: per-node/provider/day aggregates plus retry
+    overhead as its own line item. Backed by the llm_cost_latency and
+    llm_retry_overhead views over llm_call_log (db/schema.sql)."""
+    if not settings.database_url:
+        return {"error": "DATABASE_URL not set — cost/latency data unavailable"}
+
+    from db.connection import get_connection
+    from db.queries import llm_cost_by_node, retry_overhead_summary
+
+    async with get_connection() as conn:
+        by_node = await llm_cost_by_node(conn, days=days)
+        retry_overhead = await retry_overhead_summary(conn, days=days)
+
+    return {"by_node": by_node, "retry_overhead": retry_overhead}

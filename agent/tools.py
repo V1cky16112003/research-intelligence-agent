@@ -113,8 +113,12 @@ async def sql_analytics_tool(
                 results = await queries.provider_p95_latency(conn)
             elif query_type == "experiments":
                 results = await queries.get_experiments_summary(conn)
+            elif query_type == "cost_by_node":
+                results = await queries.llm_cost_by_node(conn)
+            elif query_type == "retry_overhead":
+                results = await queries.retry_overhead_summary(conn)
             else:
-                return json.dumps({"error": f"Unknown query_type: {query_type}. Valid: papers_by_month, query_volume, provider_latency, experiments"})
+                return json.dumps({"error": f"Unknown query_type: {query_type}. Valid: papers_by_month, query_volume, provider_latency, experiments, cost_by_node, retry_overhead"})
 
         return json.dumps({
             "tool": "sql_analytics",
@@ -249,8 +253,8 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "query_type": {
                         "type": "string",
-                        "enum": ["papers_by_month", "query_volume", "provider_latency", "experiments"],
-                        "description": "papers_by_month: paper counts by category/month. query_volume: recent query trends. provider_latency: LLM latency stats. experiments: full eval metrics.",
+                        "enum": ["papers_by_month", "query_volume", "provider_latency", "experiments", "cost_by_node", "retry_overhead"],
+                        "description": "papers_by_month: paper counts by category/month. query_volume: recent query trends. provider_latency: LLM latency stats. experiments: full eval metrics. cost_by_node: $ cost and latency per agent node (planner/executor/critic/reporter) per day. retry_overhead: cost/latency attributable to Critic-triggered retries vs the happy path.",
                     },
                     "category": {
                         "type": "string",
