@@ -8,9 +8,9 @@ pinned: false
 app_port: 7860
 ---
 
-# Autonomous Research Intelligence Agent
+# Research Intelligence Agent
 
-An AI-powered research assistant for ArXiv ML papers. Ask questions in natural language — get cited, grounded answers backed by a 50K-paper corpus, with SQL analytics and live web search fallback.
+An autonomous research assistant for ArXiv ML papers. Ask a question in natural language and get a cited, grounded answer — backed by hybrid semantic+keyword search over a 50K-paper corpus, live SQL analytics, a knowledge graph of authors/categories, and web search fallback for anything out of corpus.
 
 **Live demo:** `https://<your-hf-space>.hf.space` · **UI:** `https://<your-vercel>.vercel.app`
 
@@ -18,53 +18,46 @@ An AI-powered research assistant for ArXiv ML papers. Ask questions in natural l
 
 ## What It Does
 
-- **Semantic search** over ArXiv abstracts (cs.LG, cs.AI, cs.CL, cs.CV) via pgvector
-- **SQL analytics** — "how many LLM papers per month in 2023?" returns real window-function query results
-- **Web search fallback** via DuckDuckGo for out-of-corpus questions
-- **Cited answers** — every claim traced back to a paper (arxiv_id + title + authors)
-- **Resilient LLM** — Groq Llama 3.3 70B primary, Gemini 2.5 Flash fallback on rate-limit
-- **RAGAS quality gate** — CI fails if faithfulness < 0.8 or answer relevancy < 0.75
+- **Hybrid retrieval** — pgvector cosine search + BM25 full-text, fused with RRF, then LLM-reranked to the top 8 chunks
+- **SQL analytics** — "how many LLM papers per month in 2023?" runs a real aggregate Postgres query (window functions, percentiles), not an LLM guess
+- **Knowledge graph** — co-authorship and category relationships via Neo4j (fixed Cypher templates only, never LLM-generated), with an automatic Postgres fallback if Neo4j is unreachable
+- **Web search fallback** via DuckDuckGo for questions outside the corpus
+- **Cited answers** — every claim traces back to a paper (arxiv_id, title, authors)
+- **Self-correcting agent loop** — a Critic node checks the Reporter's draft against retrieved context and can force up to 3 retries
+- **Resilient LLM gateway** — Groq (Llama 3.3 70B) → NVIDIA NIM → Gemini 2.5 Flash, cascading fallback on rate limits/errors, with an Upstash Redis response cache
+- **Cost & latency observability** — every LLM call is logged (node, provider, tokens, cost, latency, retries) and exposed via a dashboard endpoint
+- **RAGAS quality gate in CI** — a PR that degrades retrieval or answer quality fails the build
 
 ---
 
 ## Architecture
 
 ```
-User → React UI (Vercel)
-         │
-         ▼
-     FastAPI /chat  (HF Spaces Docker, port 7860)
-         │
-         ▼
-  LangGraph State Machine
-  ┌──────────────────────────────────────────┐
-  │  Planner  →  Executor  →  Critic         │
-  │                │            │            │
-  │          [tool calls]   PASS/RETRY       │
-  │                │            │            │
-  │           ←────┘  (≤3 retries)          │
-  │                ↓                         │
-  │            Reporter  →  cited answer     │
-  └──────────────────────────────────────────┘
-         │              │              │
-    RAG tool       SQL tool      Web search
-   (pgvector)  (window funcs)  (DuckDuckGo)
-         │
-    Neon Postgres (pgvector 0.8.0)
-    nomic-embed-text-v2 (768-dim, CPU)
-    Upstash Redis (LLM response cache)
-    PostgresSaver (LangGraph checkpoints)
+React UI (Vercel)
+      │
+      ▼
+FastAPI /chat  (rate-limited, CORS-locked — HF Spaces Docker, port 7860)
+      │
+      ▼
+LangGraph state machine
+┌────────────────────────────────────────────────┐
+│  Planner → Executor → Critic → Reporter         │
+│                │           │                     │
+│          [tool calls]  PASS / RETRY (≤3)        │
+└────────────────────────────────────────────────┘
+      │            │            │            │
+  RAG tool      SQL tool    Graph tool    Web search
+ (pgvector +   (aggregate    (Neo4j, w/    (DuckDuckGo)
+  BM25 + RRF    queries in   Postgres
+  + rerank)     Postgres)    fallback)
+
+Neon Postgres (pgvector, halfvec embeddings)
+Neo4j AuraDB (co-authorship / category graph)
+Upstash Redis (LLM response cache)
+AsyncPostgresSaver (LangGraph checkpoints — multi-turn memory)
 ```
 
----
-
-## CV Gap Coverage
-
-| Gap | How This Project Addresses It |
-|-----|-------------------------------|
-| **Gap 1 — RAG** | ArXiv abstract corpus → nomic-embed-v2 chunks → pgvector HNSW cosine search → cited retrieval tool inside LangGraph |
-| **Gap 2 — MLOps** | RAGAS golden set (20 Q/A) · Gemini-as-judge CI gate · thresholds: faithfulness ≥0.8 / answer_relevancy ≥0.75 / context_precision ≥0.7 · DagsHub MLflow param+metric logging |
-| **Gap 3 — SQL** | Neon Postgres schema with `papers`, `chunks`, `query_audit_log` · HNSW + btree indexes · window-function analytics (ROW_NUMBER per category, rolling 7-day volume, PERCENTILE_CONT p95 latency) · every `/chat` request writes an audit row |
+Every `/chat` request writes an audit row (latency, tokens, tools called, chunk IDs) plus one cost/latency row per LLM call.
 
 ---
 
@@ -72,14 +65,15 @@ User → React UI (Vercel)
 
 | Role | Tool |
 |------|------|
-| Agent | LangGraph 1.2.6 — Planner→Executor→Critic→Reporter |
-| Primary LLM | Groq — Llama 3.3 70B (70 RPM free tier) |
-| Fallback LLM | Gemini 2.5 Flash (exponential backoff on 429) |
-| Embeddings | nomic-embed-text-v2 (137M params, 768-dim, CPU) |
-| Vector + SQL | pgvector 0.8.0 on Neon Postgres (HNSW index) |
-| Cache | Upstash Redis (HTTP REST, no persistent connection) |
-| Eval | RAGAS 0.4.3 + DagsHub MLflow 3.x |
-| API host | Hugging Face Spaces (Docker, 16GB RAM) |
+| Agent orchestration | LangGraph — Planner → Executor → Critic → Reporter |
+| Primary LLM | Groq (Llama 3.3 70B) |
+| Fallback LLMs | NVIDIA NIM → Gemini 2.5 Flash |
+| Embeddings | nomic-embed-text-v2-moe (768-dim) |
+| Vector + SQL store | Postgres (Neon) with pgvector (halfvec) |
+| Knowledge graph | Neo4j AuraDB, Postgres fallback |
+| Cache | Upstash Redis (REST, no persistent connection) |
+| Eval | RAGAS + DagsHub MLflow |
+| API host | Hugging Face Spaces (Docker) |
 | UI | React 18 + Vite on Vercel |
 
 ---
@@ -87,93 +81,27 @@ User → React UI (Vercel)
 ## Quickstart (local with Docker)
 
 ```bash
-git clone <repo>
-cd "RAG project"
+git clone https://github.com/<your-username>/<your-repo>.git
+cd <your-repo>
 cp .env.example .env
-# Fill in GROQ_API_KEY and GEMINI_API_KEY at minimum
+# Fill in GROQ_API_KEY and DATABASE_URL at minimum
 docker-compose up --build
 
-# In another terminal:
 curl http://localhost:7860/health
-# {"status":"ok","version":"1.0.0"}
 
-# Ingest ArXiv corpus (download Kaggle dataset first):
-# https://www.kaggle.com/datasets/Cornell-University/arxiv
+# Ingest an ArXiv corpus (e.g. the Cornell ArXiv Kaggle dataset):
 docker-compose exec app python -m ingestion.loader \
   --file /path/to/arxiv-metadata-oai-snapshot.json \
   --limit 50000 --categories cs.LG,cs.AI,cs.CL,cs.CV
 
-docker-compose exec app python -m ingestion.pipeline --limit 50000
+docker-compose exec app python -m ingestion.pipeline --limit 10000
 
-# Ask a question:
 curl -X POST http://localhost:7860/chat \
   -H "Content-Type: application/json" \
   -d '{"query": "What are the key findings on attention in transformers?"}'
 ```
 
----
-
-## Deploy to Hugging Face Spaces
-
-1. Create a new Space → **Docker** runtime → **16GB** hardware
-2. Push this repo to the Space's git remote:
-   ```bash
-   git remote add space https://huggingface.co/spaces/<username>/<space-name>
-   git push space main
-   ```
-3. Add these **Space secrets** (Settings → Repository secrets):
-   ```
-   DATABASE_URL          # Neon connection string
-   UPSTASH_REDIS_REST_URL
-   UPSTASH_REDIS_REST_TOKEN
-   GROQ_API_KEY
-   NVIDIA_NIM_API_KEY    # 2nd LLM fallback tier
-   GEMINI_API_KEY        # 3rd LLM fallback tier
-   NEO4J_URI             # AuraDB — optional, graph_query tool degrades gracefully if unset
-   NEO4J_USER
-   NEO4J_PASSWORD
-   DAGSHUB_TOKEN
-   DAGSHUB_REPO          # username/reponame
-   ```
-4. Space builds automatically. First cold start downloads nomic-embed-v2 (~500MB) — takes ~2 min.
-
----
-
-## Deploy React UI to Vercel
-
-```bash
-cd frontend
-npm install
-# Test locally against your Space:
-VITE_API_URL=https://<username>-<space-name>.hf.space npm run dev
-```
-
-1. Push `frontend/` to GitHub (or the same repo)
-2. Import in Vercel → set **Root Directory** to `frontend`
-3. Add environment variable: `VITE_API_URL=https://<username>-<space-name>.hf.space`
-4. Deploy
-
----
-
-## GitHub Actions CI
-
-Three jobs on every push/PR to `main`:
-
-| Job | What it does |
-|-----|-------------|
-| `lint-and-test` | ruff + pytest (22 tests, runs without Docker via conftest stubs) |
-| `ragas-quality-gate` | Runs RAGAS on 6 golden questions against live DB (NIM 70B judge at 10 RPM has variable, sometimes high latency — 60min job timeout); exits 1 if thresholds breach |
-| `keep-alive` | Pings `HF_SPACE_URL/health` to prevent cold start on next user |
-
-Add these **GitHub secrets** (Settings → Secrets → Actions):
-```
-DATABASE_URL, GROQ_API_KEY, NVIDIA_NIM_API_KEY, GEMINI_API_KEY,
-UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN,
-DAGSHUB_TOKEN, DAGSHUB_REPO, HF_SPACE_URL
-```
-`NVIDIA_NIM_API_KEY` is required here — the RAGAS judge in `eval/run_ragas.py`
-uses NIM (not Gemini) by default, since Gemini's free tier (5 req/min, 20
-requests/day) is too small to judge multiple RAGAS metrics per question.
+See `CLAUDE.md` for the full command reference (migrations, backfills, graph sync, evaluation).
 
 ---
 
@@ -181,28 +109,34 @@ requests/day) is too small to judge multiple RAGAS metrics per question.
 
 ```
 app/            FastAPI app + settings
-agent/          LangGraph nodes, graph, tools, gateway, state
-db/             Postgres connection pool, schema, analytics queries
-ingestion/      ArXiv loader, SourceConnector, embed pipeline
+agent/          LangGraph nodes, graph, tools, LLM gateway, state
+db/             Postgres connection pool, analytics queries, migrations
+graph/          Neo4j client + knowledge graph sync
+ingestion/      ArXiv loader, embedding pipeline, date backfill, rebalance
 eval/           RAGAS golden set + evaluation runner
-monitoring/     Evidently drift (stretch)
-tests/          22 unit tests (no Docker required)
+docs/           Storage/security architecture notes
+tests/          Unit tests (no Docker required — deps are stubbed)
 frontend/       React chat UI (Vite)
-.github/        CI workflow
-Dockerfile      HF Spaces production image
-docker-compose  Local dev (Postgres + Redis + app)
+.github/        CI workflows
 ```
 
 ---
 
-## RAGAS Quality Gate
+## Testing & CI
 
-The CI gate (`eval/golden_set.json`, `eval/run_ragas.py`) runs 10 of 20 golden Q/A pairs on every PR:
-
-```
-Thresholds:  faithfulness ≥ 0.80
-             answer_relevancy ≥ 0.75
-             context_precision ≥ 0.70
+```bash
+ruff check . --ignore E501,E402
+pytest tests/ -v --tb=short
 ```
 
-Results are logged to DagsHub MLflow under experiment `rag-eval`. A PR that degrades retrieval quality fails the build before merge.
+CI runs three jobs on every push/PR to `main`: lint + test (no secrets needed), a RAGAS quality gate against the live database, and a keep-alive ping to prevent Space cold starts.
+
+---
+
+## Contributing
+
+Issues and pull requests are welcome. Please run the lint and test commands above before opening a PR.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
