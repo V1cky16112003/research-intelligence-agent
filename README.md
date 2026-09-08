@@ -24,7 +24,7 @@ An autonomous research assistant for ArXiv ML papers. Ask a question in natural 
 - **Web search fallback** via DuckDuckGo for questions outside the corpus
 - **Cited answers** — every claim traces back to a paper (arxiv_id, title, authors)
 - **Self-correcting agent loop** — a Critic node checks the Reporter's draft against retrieved context and can force up to 3 retries
-- **Resilient LLM gateway** — Groq (Llama 3.3 70B) → NVIDIA NIM → Gemini 2.5 Flash, cascading fallback on rate limits/errors, with an Upstash Redis response cache
+- **Resilient LLM gateway** — Groq → NVIDIA NIM → Gemini 2.5 Flash, cascading fallback on rate limits/errors, with an Upstash Redis response cache
 - **Cost & latency observability** — every LLM call is logged (node, provider, tokens, cost, latency, retries) and exposed via a dashboard endpoint
 - **RAGAS quality gate in CI** — a PR that degrades retrieval or answer quality fails the build
 
@@ -66,8 +66,8 @@ Every `/chat` request writes an audit row (latency, tokens, tools called, chunk 
 | Role | Tool |
 |------|------|
 | Agent orchestration | LangGraph — Planner → Executor → Critic → Reporter |
-| Primary LLM | Groq (Llama 3.3 70B) |
-| Fallback LLMs | NVIDIA NIM → Gemini 2.5 Flash |
+| Primary LLM | Groq (`openai/gpt-oss-120b`) |
+| Fallback LLMs | NVIDIA NIM (`meta/llama-3.1-70b-instruct`) → Gemini 2.5 Flash |
 | Embeddings | nomic-embed-text-v2-moe (768-dim) |
 | Vector + SQL store | Postgres (Neon) with pgvector (halfvec) |
 | Knowledge graph | Neo4j AuraDB, Postgres fallback |
