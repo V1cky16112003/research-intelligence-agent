@@ -58,9 +58,6 @@ def _mean(val) -> float:
     return sum(vals) / len(vals) if vals else float("nan")
 
 
-NIM_JUDGE_MAX_RPM = 10  # stay well under NIM's 40 RPM free-tier cap during RAGAS evaluation
-
-
 class _SlidingWindowRateLimiter:
     """Thread-safe rate limiter: blocks until fewer than max_calls have been made
     in the trailing period_seconds window. RAGAS dispatches metric evaluations from
@@ -116,6 +113,13 @@ NIM_ANSWER_MAX_RPM = 35
 # Groq decommissioned llama-3.3-70b-versatile, so the judge moved down to the 20b
 # to preserve that separation rather than share one bucket.
 GROQ_JUDGE_MAX_RPM = 20  # under Groq's 30 RPM free tier
+
+# answer_relevancy's embeddings. Gemini's OpenAI-compatible endpoint serves these;
+# unlike the 5 RPM chat tier that ruled Gemini out as the *judge*, the embeddings
+# tier is roomy, and answer_relevancy needs only a few vectors per question.
+GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+GEMINI_EMBED_MODEL = "gemini-embedding-001"
+GEMINI_EMBED_MAX_RPM = 60
 
 
 class _AsyncSlidingWindowRateLimiter:
@@ -297,9 +301,6 @@ async def run_evaluation(args: argparse.Namespace) -> dict:
         ]
         dataset = EvaluationDataset(samples=samples)
 
-        nim_key = os.getenv("NVIDIA_NIM_API_KEY", "")
-        nim_base = "https://integrate.api.nvidia.com/v1"
-
         # Judge chat completions run on Groq, not NIM — NIM's free-tier queue proved
         # too slow/unreliable for CI (individual calls observed taking 30s-15min),
         # while Groq answered every generation call in this pipeline in under a
@@ -325,26 +326,33 @@ async def run_evaluation(args: argparse.Namespace) -> dict:
         # the 400 into a 413 rate_limit_exceeded on every call.
         judge_llm = llm_factory(args.judge_model, client=groq_client, reasoning_effort="low")
 
-        # Embeddings still go to NIM — Groq has no embeddings endpoint.
-        nim_embed_limiter = _SlidingWindowRateLimiter(NIM_JUDGE_MAX_RPM, period_seconds=60.0)
+        # Embeddings go to Gemini. Groq has no embeddings endpoint, and NVIDIA NIM
+        # — which served this until 2026-09 — retired its entire embeddings catalogue:
+        # nv-embedqa-e5-v5, nv-embed-v1, llama-3.2-nv-embedqa-1b-v2 and bge-m3 all
+        # answer 410 Gone. That surfaced as `answer_relevancy: nan` failing the CI
+        # gate, which reads like a retrieval regression rather than a dead dependency,
+        # so: any future embeddings 4xx should be checked against the provider's
+        # model lifecycle page before anyone goes hunting in the retrieval code.
+        # (`check_thresholds()` treats NaN as a hard failure — that is what caught it.)
+        gemini_embed_limiter = _SlidingWindowRateLimiter(
+            GEMINI_EMBED_MAX_RPM, period_seconds=60.0
+        )
 
         # `ragas.embeddings.embedding_factory()`'s modern interface returns a class
         # that lacks `embed_query`, which the (deprecated but still-used) singleton
         # `answer_relevancy` metric requires — so build the legacy Langchain wrapper
-        # directly instead. nv-embedqa-e5-v5 is an asymmetric embedding model that
-        # requires an explicit `input_type`; LangChain's client also pre-tokenizes
-        # text into token-ID lists by default, which NIM's endpoint rejects, so
-        # tokenization must be disabled and `input_type` passed via `extra_body`.
-        nim_embeddings = LangchainOpenAIEmbeddings(
-            model="nvidia/nv-embedqa-e5-v5",
-            api_key=nim_key,
-            base_url=nim_base,
+        # directly instead. `check_embedding_ctx_length`/`tiktoken_enabled` stay off
+        # because LangChain otherwise pre-tokenizes text into token-ID lists, which
+        # this OpenAI-compatible endpoint rejects.
+        gemini_embeddings = LangchainOpenAIEmbeddings(
+            model=GEMINI_EMBED_MODEL,
+            api_key=os.getenv("GEMINI_API_KEY", ""),
+            base_url=GEMINI_OPENAI_BASE_URL,
             check_embedding_ctx_length=False,
             tiktoken_enabled=False,
-            model_kwargs={"extra_body": {"input_type": "query"}},
         )
-        _rate_limit_method(nim_embeddings.client, "create", nim_embed_limiter)
-        judge_embeddings = LangchainEmbeddingsWrapper(nim_embeddings)
+        _rate_limit_method(gemini_embeddings.client, "create", gemini_embed_limiter)
+        judge_embeddings = LangchainEmbeddingsWrapper(gemini_embeddings)
 
         result = ragas_evaluate(
             dataset=dataset,

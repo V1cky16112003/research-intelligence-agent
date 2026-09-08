@@ -6,9 +6,9 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -33,6 +33,16 @@ class Settings(BaseSettings):
     neo4j_uri: str = ""
     neo4j_user: str = ""
     neo4j_password: str = ""
+    # Comma-separated origin allowlist. Defaults to "*" to preserve the deployed
+    # Vercel frontend; set ALLOWED_ORIGINS to that frontend's URL to lock it down.
+    allowed_origins: str = "*"
+    # /chat is unauthenticated and each request fans out to ~8 provider calls on
+    # personal API keys, so an open endpoint is a direct quota-drain amplifier.
+    # Generous enough that no human user notices; low enough to stop a script.
+    chat_rate_limit_per_minute: int = 20
+
+    def get_allowed_origins(self) -> list[str]:
+        return [o.strip() for o in self.allowed_origins.split(",") if o.strip()] or ["*"]
 
     def get_redis_url(self) -> str:
         """Return a single Redis URL, combining Upstash vars if needed."""
@@ -117,12 +127,53 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Research Intelligence Agent", version="1.0.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.get_allowed_origins(),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# Fixed-window per-client counter. In-process, so it resets on redeploy and does not
+# coordinate across replicas — it is a quota-drain brake, not an access control. The
+# endpoint still has no authentication; see docs/security.md.
+_rate_window: dict[str, tuple[int, float]] = {}
+
+
+def _client_key(request: Request) -> str:
+    # Hugging Face Spaces terminates TLS upstream, so the socket peer is the proxy.
+    # X-Forwarded-For is client-controlled and trivially spoofed, which is precisely
+    # why this is a brake and not a control.
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _rate_limited(request: Request) -> bool:
+    limit = settings.chat_rate_limit_per_minute
+    if limit <= 0:
+        return False
+    key = _client_key(request)
+    now = time.time()
+    count, window_start = _rate_window.get(key, (0, now))
+    if now - window_start >= 60:
+        count, window_start = 0, now
+    count += 1
+    _rate_window[key] = (count, window_start)
+    if len(_rate_window) > 10_000:  # bound the dict against unique-IP flooding
+        for stale, (_, started) in list(_rate_window.items()):
+            if now - started >= 60:
+                _rate_window.pop(stale, None)
+    return count > limit
 
 
 class ChatRequest(BaseModel):
-    query: str
-    session_id: str | None = None
+    # Bounded: the query is embedded, sent to the planner, and echoed into the
+    # reporter prompt, so an unbounded string is a cheap way to inflate token spend.
+    query: str = Field(min_length=1, max_length=4000)
+    session_id: str | None = Field(default=None, max_length=200)
 
 
 class ChatResponse(BaseModel):
@@ -141,8 +192,15 @@ async def health():
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, request: Request):
     global _query_counter
-    _query_counter += 1
     session_id = req.session_id or str(uuid.uuid4())
+
+    if _rate_limited(request):
+        return ChatResponse(
+            answer="Too many requests — please wait a minute and try again.",
+            citations=[], sql_results=None, session_id=session_id, provider="rate_limited",
+        )
+
+    _query_counter += 1
     start = time.time()
 
     try:
@@ -189,9 +247,14 @@ async def chat(req: ChatRequest, request: Request):
         )
 
     except Exception as e:
+        # Log the detail, return a generic message. str(e) on the exceptions that
+        # reach here comes from psycopg (which puts host/database/user in connection
+        # errors) and from provider SDKs (which echo request URLs and account
+        # identifiers), so returning it verbatim published internal topology to any
+        # caller who could make the request fail.
         logger.error("Chat failed: %s", e, exc_info=True)
         return ChatResponse(
-            answer=f"I encountered an error: {str(e)}. Please try again.",
+            answer="I encountered an internal error while answering that. Please try again.",
             citations=[],
             sql_results=None,
             session_id=session_id,
@@ -205,7 +268,7 @@ async def metrics():
 
 
 @app.get("/analytics/cost")
-async def analytics_cost(days: int = 30):
+async def analytics_cost(days: int = Query(default=30, ge=1, le=3650)):
     """Cost/latency dashboard data: per-node/provider/day aggregates plus retry
     overhead as its own line item. Backed by the llm_cost_latency and
     llm_retry_overhead views over llm_call_log (db/schema.sql)."""

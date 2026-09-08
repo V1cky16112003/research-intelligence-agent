@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 """Tests for agent tools — mocks all external dependencies."""
+import contextlib
 import json
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -91,7 +93,8 @@ async def test_graph_query_papers_by_author():
     mock_driver = MagicMock()
     mock_driver.session.return_value = mock_session
 
-    with patch("graph.neo4j_client.get_driver", return_value=mock_driver):
+    with patch.dict(os.environ, {"NEO4J_URI": "neo4j+s://fake"}), \
+         patch("graph.neo4j_client.get_driver", return_value=mock_driver):
         result_json = await graph_query_tool(query_type="papers_by_author", value="Ashish Vaswani")
 
     result = json.loads(result_json)
@@ -116,7 +119,8 @@ async def test_graph_query_papers_by_category():
     mock_driver = MagicMock()
     mock_driver.session.return_value = mock_session
 
-    with patch("graph.neo4j_client.get_driver", return_value=mock_driver):
+    with patch.dict(os.environ, {"NEO4J_URI": "neo4j+s://fake"}), \
+         patch("graph.neo4j_client.get_driver", return_value=mock_driver):
         result_json = await graph_query_tool(query_type="papers_by_category", value="cs.LG")
 
     result = json.loads(result_json)
@@ -140,7 +144,8 @@ async def test_graph_query_coauthors():
     mock_driver = MagicMock()
     mock_driver.session.return_value = mock_session
 
-    with patch("graph.neo4j_client.get_driver", return_value=mock_driver):
+    with patch.dict(os.environ, {"NEO4J_URI": "neo4j+s://fake"}), \
+         patch("graph.neo4j_client.get_driver", return_value=mock_driver):
         result_json = await graph_query_tool(query_type="coauthors", value="Ashish Vaswani")
 
     result = json.loads(result_json)
@@ -180,18 +185,24 @@ async def test_graph_query_driver_error_returns_empty_results():
 # {"error": ..., "results": []} — the tool looked "called but returned nothing".
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_sql_analytics_tolerates_unknown_planner_args():
-    """An unexpected kwarg must degrade to a valid query, not raise TypeError."""
+@contextlib.contextmanager
+def _patched_query(name, return_value):
+    """Patch one db.queries function behind a mocked connection."""
     with (
         patch("db.connection.get_connection") as mock_conn_cm,
-        patch("db.queries.papers_per_category_per_month", new_callable=AsyncMock,
-              return_value=[{"cat": "cs.LG", "paper_count": 7}]) as mock_q,
+        patch(f"db.queries.{name}", new_callable=AsyncMock, return_value=return_value) as mock_q,
     ):
         mock_conn = AsyncMock()
         mock_conn_cm.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_conn_cm.return_value.__aexit__ = AsyncMock(return_value=False)
+        yield mock_q
 
+
+@pytest.mark.asyncio
+async def test_sql_analytics_tolerates_unknown_planner_args():
+    """An unexpected kwarg must degrade to a valid query, not raise TypeError."""
+    rows = [{"month": "2015-01-01", "paper_count": 7}]
+    with _patched_query("papers_by_month", (rows, {"total_papers": 7})) as mock_q:
         result = await TOOL_DISPATCH["sql_analytics"](
             query_type="papers_by_month", category="cs.LG", agg="sum", nonsense_arg=123
         )
@@ -205,20 +216,47 @@ async def test_sql_analytics_tolerates_unknown_planner_args():
 @pytest.mark.asyncio
 async def test_sql_analytics_forwards_year_filter():
     """'year' is a real filter users ask for, so it must reach the SQL layer."""
-    with (
-        patch("db.connection.get_connection") as mock_conn_cm,
-        patch("db.queries.papers_per_category_per_month", new_callable=AsyncMock,
-              return_value=[]) as mock_q,
-    ):
-        mock_conn = AsyncMock()
-        mock_conn_cm.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_conn_cm.return_value.__aexit__ = AsyncMock(return_value=False)
-
+    with _patched_query("papers_by_month", ([], {})) as mock_q:
         await TOOL_DISPATCH["sql_analytics"](
             query_type="papers_by_month", category="cs.LG", year="2023"
         )
 
     assert mock_q.await_args.kwargs["year"] == 2023
+
+
+@pytest.mark.asyncio
+async def test_sql_analytics_returns_precomputed_summary():
+    """The summary is the whole point: the reporter must be handed the total, not
+    asked to sum the rows. Answering "how many papers are in the corpus?" by
+    summing a truncated row list is how the agent came to answer 3,098 for 50,000.
+    """
+    stats = {"total_papers": 50000, "distinct_categories": 151}
+    with _patched_query("corpus_stats", stats):
+        data = json.loads(await TOOL_DISPATCH["sql_analytics"](query_type="corpus_stats"))
+
+    assert data["summary"]["total_papers"] == 50000
+    assert data["results"] == [stats]
+
+
+@pytest.mark.asyncio
+async def test_sql_analytics_aliases_near_miss_query_types():
+    """The planner invents plausible names; map them instead of erroring out, which
+    downstream reads as "the corpus has no such data"."""
+    with _patched_query("corpus_stats", {"total_papers": 50000}):
+        data = json.loads(await TOOL_DISPATCH["sql_analytics"](query_type="total_papers"))
+
+    assert data["query_type"] == "corpus_stats"
+    assert "error" not in data
+
+
+@pytest.mark.asyncio
+async def test_sql_analytics_flags_empty_results_as_empty_table():
+    """Zero rows must not read as "the corpus lacks this data"."""
+    with _patched_query("llm_cost_by_node", []):
+        data = json.loads(await TOOL_DISPATCH["sql_analytics"](query_type="cost_by_node"))
+
+    assert data["count"] == 0
+    assert "empty" in data["summary"]["note"]
 
 
 @pytest.mark.asyncio

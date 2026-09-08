@@ -20,9 +20,13 @@ PLANNER_SYSTEM = """You are a research planning assistant. Given a user query, c
 
 Available tools:
 - rag_retrieval: Search ArXiv ML paper corpus semantically. Use for questions about paper content, methods, findings.
-- sql_analytics: Run analytics over the papers database.
+- sql_analytics: Run analytics over the papers database. Every result carries a "summary" with the totals already computed — use those numbers, never add up the rows yourself.
   query_type options:
-    - papers_by_month: paper counts by category/month — use for "how many papers", "papers by category", publication trends over time. Optional "category" arg (e.g. "cs.LG") and optional "year" arg (e.g. 2023). Pass no other args.
+    - corpus_stats: total papers, chunks, authors, categories and the corpus date range — use for "how many papers are there", "how big is the corpus", "what does the corpus cover". Takes no filters.
+    - papers_by_category: paper counts per ArXiv category, largest first — use for "which categories", "how many cs.LG papers". Optional "year" and "limit".
+    - papers_by_year: publication counts per year — use for "papers per year", "how many were published in 2015". Optional "category".
+    - papers_by_month: monthly publication counts — use for month-level publication trends. Optional "category" and "year".
+    - top_authors: most prolific authors — use for "who publishes most". Optional "category" and "limit".
     - query_volume: recent daily user query volume from the audit log — use for "how many questions/queries have been asked"
     - provider_latency: LLM provider p95 latency stats — use for "how fast/slow does the system respond"
     - experiments: RAGAS eval metrics summary (faithfulness, relevancy) — use for "how well does the system perform", evaluation quality
@@ -50,7 +54,12 @@ Rate the answer and decide: PASS or RETRY.
   SQL Analytics Results, an answer built from those numbers is fully grounded and should PASS even
   though it cites no paper titles — SQL analytics questions (counts, trends, stats) have no papers
   to cite by nature, so "no paper citations" is NOT a reason to RETRY when SQL results are present.
-- RETRY: the draft is vague, contains claims unsupported by the context, or misses the key question
+  A figure taken from the SQL Analytics Summary is correct by definition: those totals are computed
+  in the database, so PASS a draft that quotes them even if the individual rows shown do not
+  visibly add up to it. Never RETRY because you could not re-derive a number by hand.
+- RETRY: the draft is vague, contains claims unsupported by the context, or misses the key question.
+  If the context is marked as truncated, absent evidence is not contradicting evidence — do not
+  RETRY on that basis alone.
 
 Respond with JSON only (no markdown fences):
 {"verdict": "PASS" or "RETRY", "reason": "brief reason", "refined_query": "improved search query if RETRY, else null"}
@@ -108,6 +117,37 @@ def _filter_tool_args(tool_fn, args: dict) -> dict:
     return accepted
 
 
+# The critic reviews a bounded slice of the context to keep its prompt small. The
+# bound used to be a blind context[:1200], which on any SQL query returning more
+# than a handful of rows cut off mid-array — so the critic compared the draft's
+# totals against a fragment of the evidence, "found" a mismatch every single pass,
+# and burned all MAX_RETRIES cycles on a draft that was correct. Two things fix it:
+# keep the authoritative summary whole, and label the cut so absent evidence is not
+# mistaken for unsupported claims.
+CRITIC_CONTEXT_CHARS = 4000
+
+# Rows shown per aux tool (graph_query, web_search). The graph tool already caps
+# its own result sets, but web_search is an external feed with no such guarantee,
+# so the context builder bounds it independently rather than trusting the source.
+MAX_AUX_ROWS = 25
+
+
+def _critic_context(context: str, sql_summary: dict | None = None) -> str:
+    """Bound the critic's view of the context without cutting away the numbers."""
+    if len(context) <= CRITIC_CONTEXT_CHARS:
+        return context
+    notice = "\n\n[Context truncated for review. Anything above is complete and authoritative; do not treat material missing here as unsupported.]"
+    if sql_summary:
+        head = (
+            "SQL Analytics Summary (authoritative totals, complete):\n"
+            + json.dumps(sql_summary, default=str, indent=2)
+        )
+        separator = "\n\n"
+        budget = max(0, CRITIC_CONTEXT_CHARS - len(head) - len(separator) - len(notice))
+        return f"{head}{separator}{context[:budget]}{notice}"
+    return context[:CRITIC_CONTEXT_CHARS] + notice
+
+
 def _call_record(resp: dict) -> dict:
     """Extract the cost/latency fields the gateway attached to a chat() response
     into a flat record for the llm_calls accumulator (see state.py)."""
@@ -124,22 +164,48 @@ def _call_record(resp: dict) -> dict:
     }
 
 
-def _build_context(chunks: list, sql: list) -> str:
-    """Build a formatted context string from retrieved chunks and SQL results."""
+def _build_context(
+    chunks: list,
+    sql: list,
+    sql_summary: dict | None = None,
+    aux_results: list | None = None,
+) -> str:
+    """Build a formatted context string from every tool's output."""
     parts = []
     for i, chunk in enumerate(chunks[:8]):
         title = chunk.get("title", "Unknown")
         arxiv_id = chunk.get("arxiv_id", "")
         content = chunk.get("content", "")[:600]
         parts.append(f"[{i+1}] {title} ({arxiv_id})\n{content}")
+    if sql_summary:
+        # First, and separately, because it is the answer. Every sql_analytics query
+        # type computes its totals in Postgres precisely so the reporter never has to
+        # sum a list — the old context put only raw rows here, and the reporter's
+        # hand-summing produced 3,098 for a corpus of 50,000.
+        parts.append(
+            "\nSQL Analytics Summary (authoritative totals — use these numbers directly, "
+            f"do not recompute them from the rows below):\n{json.dumps(sql_summary, default=str, indent=2)}"
+        )
     if sql:
-        # No truncation here — the SQL tool itself already bounds row count
-        # (e.g. LIMIT 500 in papers_per_category_per_month). Truncating again
-        # here silently drops rows: SQL results are ordered most-recent-first,
-        # so a hard cap previously dropped exactly the older time periods a
-        # user might be asking about (e.g. "papers per month in 2023" when
-        # the most recent rows were all 2025-2026).
+        # No truncation here — the SQL tool itself already bounds every result set
+        # (db.queries.MAX_ANALYTICS_ROWS) and states in its summary when a bound bit.
         parts.append(f"\nSQL Analytics Results:\n{json.dumps(sql, default=str, indent=2)}")
+    for entry in aux_results or []:
+        # graph_query / web_search. Same shape as the SQL block: summary first
+        # (it carries totals and, for author lookups, the stored name variants
+        # that were actually matched), then the rows.
+        label = {
+            "graph_query": "Knowledge Graph Results",
+            "web_search": "Web Search Results",
+        }.get(entry.get("tool", ""), f"{entry.get('tool', 'Tool')} Results")
+        rows = entry.get("results") or []
+        if not rows:
+            continue
+        block = [f"\n{label}:"]
+        if entry.get("summary"):
+            block.append(json.dumps(entry["summary"], default=str, indent=2))
+        block.append(json.dumps(rows[:MAX_AUX_ROWS], default=str, indent=2))
+        parts.append("\n".join(block))
     return "\n\n".join(parts) if parts else "No relevant context found in corpus."
 
 
@@ -200,6 +266,8 @@ async def executor_node(state: dict) -> dict:
     tool_results_acc: list[dict] = []
     retrieved_chunks = list(state.get("retrieved_chunks", []))
     sql_results = list(state.get("sql_results", []))
+    sql_summary = state.get("sql_summary") or {}
+    aux_results = list(state.get("aux_results", []))
 
     # --- Retry path: re-retrieve with the critic's refined query ---
     refined_query = state.get("refined_query")
@@ -214,6 +282,8 @@ async def executor_node(state: dict) -> dict:
                 "tools_called": tools_called,
                 "retrieved_chunks": retrieved_chunks,
                 "sql_results": sql_results,
+                "sql_summary": sql_summary,
+                "aux_results": aux_results,
                 "refined_query": None,
                 "current_step": state.get("current_step", 0),
             }
@@ -243,6 +313,8 @@ async def executor_node(state: dict) -> dict:
             "tools_called": tools_called,
             "retrieved_chunks": retrieved_chunks,
             "sql_results": sql_results,
+            "sql_summary": sql_summary,
+            "aux_results": aux_results,
             "refined_query": None,  # consumed — clear for next pass
             "current_step": state.get("current_step", 0),
         }
@@ -292,12 +364,25 @@ async def executor_node(state: dict) -> dict:
             retrieved_chunks = result["results"]
         elif tool_name == "sql_analytics" and result.get("results"):
             sql_results = result["results"]
+            sql_summary = result.get("summary") or {}
+        elif result.get("results"):
+            # graph_query, web_search, and anything added later. Without this
+            # branch their output reached tool_results (the audit trail) and
+            # stopped there, so the reporter was asked to answer from a context
+            # that never included the rows the tool had just fetched.
+            aux_results.append({
+                "tool": tool_name,
+                "summary": result.get("summary") or {},
+                "results": result["results"],
+            })
 
     return {
         "tool_results": tool_results_acc,
         "tools_called": tools_called,
         "retrieved_chunks": retrieved_chunks,
         "sql_results": sql_results,
+        "sql_summary": sql_summary,
+        "aux_results": aux_results,
         "current_step": len(plan),  # all steps done
     }
 
@@ -309,7 +394,7 @@ async def reporter_node(state: dict) -> dict:
 
     chunks = state.get("retrieved_chunks", [])
     sql = state.get("sql_results", [])
-    context = _build_context(chunks, sql)
+    context = _build_context(chunks, sql, state.get("sql_summary"), state.get("aux_results"))
 
     messages = [
         {"role": "system", "content": REPORTER_SYSTEM},
@@ -360,7 +445,8 @@ async def critic_node(state: dict) -> dict:
     chunks = state.get("retrieved_chunks", [])
     sql = state.get("sql_results", [])
     draft = state.get("draft_answer") or ""
-    context = _build_context(chunks, sql)
+    sql_summary = state.get("sql_summary")
+    context = _build_context(chunks, sql, sql_summary, state.get("aux_results"))
 
     messages = [
         {"role": "system", "content": CRITIC_SYSTEM},
@@ -369,7 +455,14 @@ async def critic_node(state: dict) -> dict:
             "content": (
                 f"Query: {state['user_query']}\n\n"
                 f"Draft answer:\n{draft[:800]}\n\n"
-                f"Retrieved context:\n{context[:1200]}"
+                # The critic used to see context[:1200] while the reporter saw all of
+                # it. On any SQL query returning more than a handful of rows that cut
+                # landed mid-array, so the critic "checked" the draft's totals against
+                # a fragment, always found a mismatch, and issued RETRY every pass
+                # until MAX_RETRIES — three extra reporter+critic round trips per
+                # query, guaranteed, for a draft that was fine. Grounding checks need
+                # the same evidence the draft was written from.
+                f"Retrieved context:\n{_critic_context(context, sql_summary)}"
             ),
         },
     ]

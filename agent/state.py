@@ -25,6 +25,17 @@ class AgentState(TypedDict):
     # Retrieved context
     retrieved_chunks: list[dict]   # from RAG tool
     sql_results: list[dict]        # from SQL tool
+    # Pre-aggregated totals accompanying sql_results. Carried separately because the
+    # reporter must be handed the answer, not asked to derive it from the rows.
+    sql_summary: dict | None
+    # Output from tools that return neither chunks nor SQL rows — graph_query and
+    # web_search — as [{tool, summary, results}]. Both previously had nowhere to
+    # land: the executor appended them to tool_results (audit only) and then
+    # returned a state update naming just retrieved_chunks and sql_results, so
+    # _build_context never saw them and the reporter answered "the provided
+    # context does not contain any information" on a tool call that had in fact
+    # succeeded. Half the tool surface was write-only.
+    aux_results: list[dict]
 
     # Critique
     critique: str | None

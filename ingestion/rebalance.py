@@ -3,11 +3,18 @@ from __future__ import annotations
 """
 Corpus rebalance: recency-stratified re-ingest within the Neon 512 MB cap.
 
-Phase 2 of the corpus-rebalance roadmap. Today only 1,865 / 50,000 papers
-(3.7%) are post-2021, so retrieval is 95.8% accurate on classical topics but
-~25-30% on modern. This script rebuilds the `chunks` table with a
-recency-stratified sample that raises the post-2021 share to ~25% while
-staying under the Neon free-tier disk ceiling (512 MB).
+Phase 2 of the corpus-rebalance roadmap.
+
+!! PREMISE INVALIDATED 2026-09-05 — DO NOT --apply WITHOUT RE-DESIGNING. !!
+
+This was written against `published_at` values loaded from the snapshot's
+`update_date`, which made the corpus look like it ran to 2026 with 1,865 (3.7%)
+post-2021 papers. Those dates were wrong. After `ingestion/backfill_dates.py`,
+the corpus is arXiv IDs 0704-1805 and genuinely ends 2018-05-16, so there are
+**zero** post-2021 papers. The `modern` stratum this script exists to fill can
+never be filled from this corpus; the only fix is ingesting newer papers.
+
+The guards in `apply()` now abort on both of these rather than proceeding.
 
 Two modes:
 
@@ -15,7 +22,8 @@ Two modes:
                         project post-rebalance storage and abort if it would
                         exceed 90% of the ceiling. Prints a plan, writes nothing.
 
-  --apply:              copy chunks to a backup table (cheap metadata-only),
+  --apply:              copy chunks to a backup table (a full CTAS data copy,
+                        ~220 MB at current size — NOT cheap, see guards),
                         TRUNCATE chunks, re-embed a recency-stratified sample
                         of papers, bulk-insert, verify counts, drop the backup.
 
@@ -196,6 +204,71 @@ async def dry_run(target_chunks: int, modern_share: float) -> dict:
     return plan
 
 
+
+async def _assert_safe_to_truncate(
+    conn, paper_ids: list[int], target_chunks: int, modern_share: float, force: bool
+) -> None:
+    """Refuse to TRUNCATE `chunks` when the rebuild cannot replace what it destroys.
+
+    Three ways this script can quietly do more harm than good, all of which it
+    previously walked straight into:
+
+    1. The modern stratum is empty. Post-backfill the corpus ends 2018-05-16, so
+       `published_at >= 2021` matches nothing and the "rebalance" just re-picks the
+       newest classic papers — the region already at 100% coverage.
+    2. The rebuild is smaller than the corpus it replaces. With the default
+       --target-chunks 12000 against 40,001 existing chunks, TRUNCATE would drop
+       31,001 embeddings that nothing in this run puts back.
+    3. The backup is a full CTAS copy of every embedding (~220 MB), not the
+       "cheap metadata-only" operation the docstring used to claim. At 483/512 MB
+       it cannot fit, so it fails with DiskFull *before* the TRUNCATE — data
+       survives by luck of statement ordering, not by design.
+    """
+    modern_n = int(target_chunks * modern_share)
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT count(*) FROM papers WHERE published_at IS NOT NULL "
+            "AND EXTRACT(YEAR FROM published_at) >= %s",
+            (POST_2021_CUTOFF_YEAR,),
+        )
+        modern_available = (await cur.fetchone())[0]
+        await cur.execute("SELECT count(*) FROM chunks")
+        existing_chunks = (await cur.fetchone())[0]
+        db_size = await _db_size(conn)
+        await cur.execute("SELECT pg_total_relation_size('chunks')")
+        chunks_size = (await cur.fetchone())[0]
+
+    problems = []
+    if modern_n and modern_available < modern_n:
+        problems.append(
+            f"modern stratum wants {modern_n} papers >= {POST_2021_CUTOFF_YEAR} "
+            f"but only {modern_available} exist — this corpus ends in 2018, so a "
+            f"recency rebalance cannot do anything except re-pick 2018 papers"
+        )
+    if len(paper_ids) < existing_chunks:
+        problems.append(
+            f"rebuild selects {len(paper_ids):,} papers but TRUNCATE would destroy "
+            f"{existing_chunks:,} existing chunks — a net loss of "
+            f"{existing_chunks - len(paper_ids):,} embeddings"
+        )
+    if db_size + chunks_size > NEON_FREE_TIER_BYTES:
+        problems.append(
+            f"the CTAS backup needs another {chunks_size // (1024*1024)} MB on top of "
+            f"the current {db_size // (1024*1024)} MB, over the "
+            f"{NEON_FREE_TIER_BYTES // (1024*1024)} MB ceiling — it will DiskFull"
+        )
+
+    if problems and not force:
+        raise SystemExit(
+            "ABORT: refusing to truncate `chunks`.\n  - "
+            + "\n  - ".join(problems)
+            + "\nPass --force only if you have re-read this script against the "
+              "current corpus and genuinely intend the loss."
+        )
+    if problems:
+        logger.warning("--force set; proceeding despite: %s", "; ".join(problems))
+
+
 async def apply(
     target_chunks: int, modern_share: float, force: bool
 ) -> dict:
@@ -220,6 +293,7 @@ async def apply(
         paper_ids = await _fetch_stratified_paper_ids(
             conn, target_chunks, modern_share
         )
+        await _assert_safe_to_truncate(conn, paper_ids, target_chunks, modern_share, force)
         paper_id_filter = tuple(paper_ids) if paper_ids else (0,)
         placeholders = ",".join(["%s"] * len(paper_ids)) or "%s"
         async with conn.cursor() as cur:
@@ -283,6 +357,16 @@ async def apply(
     }
 
 
+def _load_env() -> None:
+    """Read .env like app/main.py's Settings, so DATABASE_URL need not be exported."""
+    import os
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(os.path.join(os.getcwd(), ".env"))
+    except ImportError:
+        pass
+
+
 def parse_args():
     p = argparse.ArgumentParser(
         description="Recency-stratified corpus rebalance within the Neon cap"
@@ -336,6 +420,7 @@ def modern_share_pct(plan: dict) -> int:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    _load_env()
     args = parse_args()
     if args.apply:
         # --apply flips the default dry-run off; both flags present -> apply wins.

@@ -7,6 +7,7 @@ Each tool is an async function that accepts a string input and returns a string 
 import asyncio
 import json
 import logging
+import os
 from typing import Callable
 
 logger = logging.getLogger(__name__)
@@ -62,19 +63,61 @@ async def rag_retrieval_tool(query: str, categories: str | None = None) -> str:
         return json.dumps({"tool": "rag_retrieval", "error": str(e), "results": []})
 
 
+SQL_QUERY_TYPES = (
+    "corpus_stats",
+    "papers_by_category",
+    "papers_by_year",
+    "papers_by_month",
+    "top_authors",
+    "query_volume",
+    "provider_latency",
+    "experiments",
+    "cost_by_node",
+    "retry_overhead",
+)
+
+# Aliases for query types the planner keeps reaching for that don't exist. It is an
+# LLM reading a prompt, not a schema, so it invents near-misses; mapping them beats
+# returning "Unknown query_type" and letting the reporter conclude the corpus is empty.
+_QUERY_TYPE_ALIASES = {
+    "paper_count": "corpus_stats",
+    "count_papers": "corpus_stats",
+    "total_papers": "corpus_stats",
+    "corpus_size": "corpus_stats",
+    "stats": "corpus_stats",
+    "categories": "papers_by_category",
+    "category_counts": "papers_by_category",
+    "papers_per_category": "papers_by_category",
+    "papers_by_author": "top_authors",
+    "authors": "top_authors",
+    "publication_trend": "papers_by_month",
+    "trends": "papers_by_month",
+    "papers_per_month": "papers_by_month",
+    "papers_per_year": "papers_by_year",
+}
+
+
 async def sql_analytics_tool(
     query_type: str,
     category: str | None = None,
     year: int | str | None = None,
+    limit: int | str | None = None,
     **_ignored: object,
 ) -> str:
     """
-    Run SQL analytics queries over the papers corpus.
+    Run SQL analytics over the papers corpus and the operational logs.
+
+    Every query type returns a *complete, pre-aggregated* answer plus a `summary`
+    object carrying the totals. That is the whole design point. The previous version
+    returned the 500 most-recent (category, month) rows out of 8001 and expected the
+    reporter LLM to add them up; asked "how many papers are in the corpus?" the agent
+    answered 3,098 against a true 50,000. Postgres counts; the LLM narrates.
 
     Args:
-        query_type: One of: 'papers_by_month', 'query_volume', 'provider_latency', 'experiments'
-        category: Optional ArXiv category filter (e.g. 'cs.LG') for papers_by_month.
-        year: Optional publication-year filter (e.g. 2023) for papers_by_month.
+        query_type: One of SQL_QUERY_TYPES (near-miss names are aliased, not rejected).
+        category: Optional ArXiv category filter, e.g. 'cs.LG'.
+        year: Optional publication-year filter, e.g. 2015.
+        limit: Optional row cap for the ranked lists (papers_by_category, top_authors).
         **_ignored: Swallows argument names the planner invented. The planner is an
             LLM, so it routinely emits plausible-but-undeclared kwargs (observed live:
             {"query_type": "papers_by_month", "category": "cs.LG", "agg": "sum"}).
@@ -84,7 +127,7 @@ async def sql_analytics_tool(
             far better than answering nothing.
 
     Returns:
-        JSON string with query results.
+        JSON string: {"tool", "query_type", "summary", "results", "count"}.
     """
     from db import queries
     from db.connection import get_connection
@@ -92,43 +135,79 @@ async def sql_analytics_tool(
     if _ignored:
         logger.info("sql_analytics ignoring unsupported planner args: %s", sorted(_ignored))
 
-    # The planner emits years as ints or strings ("2023"); normalize, and drop
+    requested = (query_type or "").strip()
+    query_type = _QUERY_TYPE_ALIASES.get(requested, requested)
+    if query_type != requested:
+        logger.info("sql_analytics mapped query_type %r -> %r", requested, query_type)
+
+    # The planner emits numbers as ints or strings ("2023"); normalize, and drop
     # anything non-numeric rather than letting it reach the query layer.
-    if year is not None:
+    def _as_int(value: object, name: str) -> int | None:
+        if value is None:
+            return None
         try:
-            year = int(str(year).strip())
+            return int(str(value).strip())
         except (TypeError, ValueError):
-            logger.info("sql_analytics ignoring non-numeric year: %r", year)
-            year = None
+            logger.info("sql_analytics ignoring non-numeric %s: %r", name, value)
+            return None
+
+    year = _as_int(year, "year")
+    row_limit = _as_int(limit, "limit") or 25
+
+    if query_type not in SQL_QUERY_TYPES:
+        return json.dumps({
+            "tool": "sql_analytics",
+            "error": f"Unknown query_type: {requested}. Valid: {', '.join(SQL_QUERY_TYPES)}",
+            "summary": {},
+            "results": [],
+            "count": 0,
+        })
 
     try:
+        summary: dict = {}
         async with get_connection() as conn:
-            if query_type == "papers_by_month":
-                results = await queries.papers_per_category_per_month(
-                    conn, category=category, year=year
-                )
+            if query_type == "corpus_stats":
+                stats = await queries.corpus_stats(conn)
+                results, summary = [stats], stats
+            elif query_type == "papers_by_category":
+                results, summary = await queries.papers_by_category(conn, year=year, limit=row_limit)
+            elif query_type == "papers_by_year":
+                results, summary = await queries.papers_by_year(conn, category=category)
+            elif query_type == "papers_by_month":
+                results, summary = await queries.papers_by_month(conn, category=category, year=year)
+            elif query_type == "top_authors":
+                results, summary = await queries.top_authors(conn, category=category, limit=row_limit)
             elif query_type == "query_volume":
                 results = await queries.rolling_query_volume(conn, days=7)
+                summary = {"total_queries": sum(r.get("query_count", 0) for r in results)}
             elif query_type == "provider_latency":
                 results = await queries.provider_p95_latency(conn)
             elif query_type == "experiments":
                 results = await queries.get_experiments_summary(conn)
             elif query_type == "cost_by_node":
                 results = await queries.llm_cost_by_node(conn)
-            elif query_type == "retry_overhead":
+            else:  # retry_overhead — the last member of SQL_QUERY_TYPES
                 results = await queries.retry_overhead_summary(conn)
-            else:
-                return json.dumps({"error": f"Unknown query_type: {query_type}. Valid: papers_by_month, query_volume, provider_latency, experiments, cost_by_node, retry_overhead"})
+
+        if not results:
+            summary = dict(summary)
+            summary["note"] = (
+                f"No rows for {query_type}. This means the underlying table is empty "
+                "for this window, not that the corpus lacks the data."
+            )
 
         return json.dumps({
             "tool": "sql_analytics",
             "query_type": query_type,
+            "summary": summary,
             "results": results,
             "count": len(results),
         }, default=str)
     except Exception as e:
         logger.error("SQL analytics failed: %s", e)
-        return json.dumps({"tool": "sql_analytics", "error": str(e), "results": []})
+        return json.dumps({
+            "tool": "sql_analytics", "error": str(e), "summary": {}, "results": [], "count": 0,
+        })
 
 
 async def web_search_tool(query: str) -> str:
@@ -186,10 +265,44 @@ _GRAPH_CYPHER_TEMPLATES = {
 }
 
 
+async def _graph_query_neo4j(query_type: str, value: str) -> list[dict]:
+    """Run one fixed Cypher template. Raises if the graph is unreachable."""
+    from graph.neo4j_client import get_driver
+
+    driver = get_driver()
+    async with driver.session() as session:
+        result = await session.run(_GRAPH_CYPHER_TEMPLATES[query_type], {"value": value})
+        return await result.data()
+
+
+async def _graph_query_postgres(query_type: str, value: str) -> tuple[list[dict], dict]:
+    """Answer the same relational question from the `papers` TEXT[] columns."""
+    from db.connection import get_connection
+    from db.queries import coauthors, papers_by_author, papers_in_category
+
+    handler = {
+        "papers_by_author": papers_by_author,
+        "papers_by_category": papers_in_category,
+        "coauthors": coauthors,
+    }[query_type]
+
+    async with get_connection() as conn:
+        return await handler(conn, value)
+
+
 async def graph_query_tool(query_type: str, value: str) -> str:
     """
-    Answer relational questions (co-authorship, shared subfields) using the
-    Neo4j knowledge graph built from paper authors/categories.
+    Answer relational questions (co-authorship, shared subfields) about the corpus.
+
+    Tries the Neo4j knowledge graph first and falls back to the equivalent
+    Postgres query when the graph is unreachable *or* returns nothing.
+
+    Falling back on an empty result, not just on an exception, is deliberate.
+    The Cypher templates match author nodes on `{name: $value}` exactly, but
+    ArXiv stores names surname-first with affiliations attached ("Bengio Yoshua
+    Universite de Montreal"), so a natural-order name from the planner returns
+    zero records rather than an error. Treating empty-from-graph as "ask
+    Postgres" turns that silent miss into an answer.
 
     Args:
         query_type: One of: 'papers_by_author', 'papers_by_category', 'coauthors'
@@ -198,28 +311,39 @@ async def graph_query_tool(query_type: str, value: str) -> str:
     Returns:
         JSON string with list of results and their metadata.
     """
-    from graph.neo4j_client import get_driver
-
-    cypher = _GRAPH_CYPHER_TEMPLATES.get(query_type)
-    if cypher is None:
+    if query_type not in _GRAPH_CYPHER_TEMPLATES:
         return json.dumps({
             "tool": "graph_query",
             "error": f"Unknown query_type: {query_type}. Valid: {list(_GRAPH_CYPHER_TEMPLATES)}",
             "results": [],
         })
 
-    try:
-        driver = get_driver()
-        async with driver.session() as session:
-            result = await session.run(cypher, {"value": value})
-            records = await result.data()
+    if os.getenv("NEO4J_URI"):
+        try:
+            records = await _graph_query_neo4j(query_type, value)
+            if records:
+                return json.dumps({
+                    "tool": "graph_query",
+                    "query_type": query_type,
+                    "value": value,
+                    "results": records,
+                    "count": len(records),
+                    "summary": {"source": "neo4j"},
+                }, default=str)
+            logger.info("Neo4j returned no rows for %s=%r; falling back to Postgres",
+                        query_type, value)
+        except Exception as e:
+            logger.warning("Neo4j unavailable (%s); falling back to Postgres", e)
 
+    try:
+        rows, summary = await _graph_query_postgres(query_type, value)
         return json.dumps({
             "tool": "graph_query",
             "query_type": query_type,
             "value": value,
-            "results": records,
-            "count": len(records),
+            "summary": summary,
+            "results": rows,
+            "count": len(rows),
         }, default=str)
     except Exception as e:
         logger.error("Graph query failed: %s", e)
@@ -247,18 +371,35 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "sql_analytics",
-            "description": "Run SQL analytics over the papers database. Use for counting papers, trends, publication stats, or query latency metrics.",
+            "description": "Run SQL analytics over the papers database. Use for counting papers, corpus size, category and author rankings, publication trends, and operational metrics. Returns pre-aggregated totals — read the summary rather than adding up rows.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query_type": {
                         "type": "string",
-                        "enum": ["papers_by_month", "query_volume", "provider_latency", "experiments", "cost_by_node", "retry_overhead"],
-                        "description": "papers_by_month: paper counts by category/month. query_volume: recent query trends. provider_latency: LLM latency stats. experiments: full eval metrics. cost_by_node: $ cost and latency per agent node (planner/executor/critic/reporter) per day. retry_overhead: cost/latency attributable to Critic-triggered retries vs the happy path.",
+                        "enum": list(SQL_QUERY_TYPES),
+                        "description": (
+                            "corpus_stats: total papers/chunks/authors/categories and the corpus date range — use for 'how many papers', 'how big is the corpus'. "
+                            "papers_by_category: paper counts per ArXiv category, largest first. "
+                            "papers_by_year: publication counts per year (optionally one category). "
+                            "papers_by_month: monthly publication counts (optionally one category and/or year). "
+                            "top_authors: most prolific authors (optionally within one category). "
+                            "query_volume: recent daily user-query volume. provider_latency: LLM latency stats. "
+                            "experiments: RAGAS eval metrics. cost_by_node: $ cost and latency per agent node per day. "
+                            "retry_overhead: cost/latency attributable to Critic-triggered retries vs the happy path."
+                        ),
                     },
                     "category": {
                         "type": "string",
-                        "description": "Optional ArXiv category filter for papers_by_month (e.g. 'cs.LG', 'cs.AI'). Omit to get all categories.",
+                        "description": "Optional ArXiv category filter (e.g. 'cs.LG', 'cs.AI') for papers_by_year, papers_by_month and top_authors. Omit for corpus-wide numbers.",
+                    },
+                    "year": {
+                        "type": "integer",
+                        "description": "Optional publication-year filter (e.g. 2015) for papers_by_category and papers_by_month.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Optional row cap for the ranked lists papers_by_category and top_authors (default 25).",
                     },
                 },
                 "required": ["query_type"],

@@ -497,3 +497,145 @@ def test_planner_prompt_mentions_graph_query():
     assert "graph_query" in PLANNER_SYSTEM
     for template in ("papers_by_author", "coauthors", "papers_by_category"):
         assert template in PLANNER_SYSTEM
+
+
+# ---------------------------------------------------------------------------
+# Context construction — the reporter must be handed the totals, and the critic
+# must be shown the same evidence the reporter wrote from.
+# ---------------------------------------------------------------------------
+
+def test_build_context_puts_the_authoritative_totals_before_the_rows():
+    """The reporter answered "how many papers?" with 3,098 for a 50,000-paper corpus
+    because the context gave it rows to add up and no total. The summary comes first
+    and is labelled authoritative so it is read as the answer, not as more data."""
+    from agent.nodes import _build_context
+
+    rows = [{"month": "2015-01-01", "paper_count": 120}]
+    context = _build_context([], rows, {"total_papers": 50000})
+
+    assert context.index("50000") < context.index("120")
+    assert "authoritative" in context.lower()
+
+
+def test_build_context_without_summary_is_unchanged():
+    from agent.nodes import _build_context
+
+    context = _build_context([], [{"paper_count": 5}])
+    assert "SQL Analytics Results" in context
+    assert "authoritative" not in context.lower()
+
+
+def test_critic_context_keeps_the_summary_whole_when_truncating():
+    """The critic used to receive a blind context[:1200]. On any SQL result larger
+    than a few rows that cut landed mid-array, so it compared the draft's totals to a
+    fragment, always found a mismatch, and issued RETRY every pass until MAX_RETRIES
+    — three wasted reporter+critic round trips on a correct draft."""
+    from agent.nodes import CRITIC_CONTEXT_CHARS, _build_context, _critic_context
+
+    rows = [{"month": f"2015-{m:02d}-01", "paper_count": m * 7} for m in range(1, 13)] * 40
+    summary = {"total_papers": 50000, "months_covered": 134}
+    context = _build_context([], rows, summary)
+    assert len(context) > CRITIC_CONTEXT_CHARS  # the situation that broke it
+
+    reviewed = _critic_context(context, summary)
+
+    assert "50000" in reviewed          # the number under review survives the cut
+    assert "truncated" in reviewed.lower()  # and the cut is declared, not silent
+    assert len(reviewed) <= CRITIC_CONTEXT_CHARS
+
+
+def test_critic_context_passes_short_context_through_untouched():
+    from agent.nodes import _critic_context
+
+    assert _critic_context("short context", {"total_papers": 1}) == "short context"
+
+
+# ---------------------------------------------------------------------------
+# aux_results: graph_query / web_search output must reach the reporter.
+#
+# Regression guard. The executor routed only rag_retrieval and sql_analytics
+# into the state keys _build_context reads; graph_query and web_search results
+# were appended to tool_results (audit only) and dropped. Live symptom: asked
+# "who are Yoshua Bengio's co-authors", graph_query returned 20 rows and the
+# reporter answered "the provided context does not contain any information
+# about Yoshua Bengio's co-authors". The tool call succeeded, the audit log
+# showed it succeeding, and the answer was still empty.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_executor_routes_graph_results_into_aux_results():
+    from agent.nodes import executor_node
+
+    rows = [{"coauthor": "Courville Aaron", "shared_papers": 42}]
+    payload = json.dumps({
+        "tool": "graph_query", "results": rows,
+        "summary": {"author": "Yoshua Bengio", "source": "postgres"}, "count": 1,
+    })
+    state = {
+        "user_query": "who are Bengio's co-authors?",
+        "plan": [{"step": "s", "tool": "graph_query",
+                  "args": {"query_type": "coauthors", "value": "Yoshua Bengio"}}],
+        "current_step": 0,
+    }
+    with patch.dict("agent.tools.TOOL_DISPATCH",
+                    {"graph_query": AsyncMock(return_value=payload)}):
+        out = await executor_node(state)
+
+    assert out["aux_results"] == [
+        {"tool": "graph_query",
+         "summary": {"author": "Yoshua Bengio", "source": "postgres"},
+         "results": rows}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_executor_routes_web_search_results_into_aux_results():
+    from agent.nodes import executor_node
+
+    rows = [{"title": "A result", "url": "https://example.com", "snippet": "..."}]
+    payload = json.dumps({"tool": "web_search", "results": rows, "count": 1})
+    state = {
+        "user_query": "latest news",
+        "plan": [{"step": "s", "tool": "web_search", "args": {"query": "latest news"}}],
+        "current_step": 0,
+    }
+    with patch.dict("agent.tools.TOOL_DISPATCH",
+                    {"web_search": AsyncMock(return_value=payload)}):
+        out = await executor_node(state)
+
+    assert out["aux_results"][0]["tool"] == "web_search"
+    assert out["aux_results"][0]["results"] == rows
+
+
+def test_build_context_renders_graph_results_for_the_reporter():
+    from agent.nodes import _build_context
+
+    context = _build_context([], [], None, [{
+        "tool": "graph_query",
+        "summary": {"author": "Yoshua Bengio", "total_papers": 206},
+        "results": [{"coauthor": "Courville Aaron", "shared_papers": 42}],
+    }])
+
+    assert "Knowledge Graph Results" in context
+    assert "Courville Aaron" in context
+    assert "206" in context
+    assert context != "No relevant context found in corpus."
+
+
+def test_build_context_bounds_aux_rows():
+    """web_search is an external feed; the context builder caps it itself."""
+    from agent.nodes import MAX_AUX_ROWS, _build_context
+
+    rows = [{"title": f"result {i}"} for i in range(MAX_AUX_ROWS + 40)]
+    context = _build_context([], [], None, [{"tool": "web_search", "results": rows}])
+
+    assert f"result {MAX_AUX_ROWS - 1}" in context
+    assert f"result {MAX_AUX_ROWS}" not in context
+
+
+def test_build_context_skips_aux_entries_with_no_rows():
+    """A failed tool must not add an empty heading the reporter could cite."""
+    from agent.nodes import _build_context
+
+    context = _build_context([], [], None, [{"tool": "graph_query", "results": []}])
+    assert context == "No relevant context found in corpus."

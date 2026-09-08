@@ -35,3 +35,10 @@ chroma_db/
 # HuggingFace / torch
 *.safetensors
 *.bin
+
+# Local datasets and tool output (dataset/ is the 5.3 GB ArXiv snapshot)
+dataset/
+graphify-out/
+.serena/
+.playwright-mcp/
+*.swp

@@ -21,12 +21,55 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# New-style arXiv identifiers (0704.xxxxx onward) encode the v1 submission
+# month in their YYMM prefix — a free, exact fallback when `versions` is absent.
+_ARXIV_YYMM = re.compile(r"^(\d{2})(\d{2})\.")
+
+
+def parse_published_at(rec: dict) -> Optional[datetime]:
+    """True publication date: the timestamp arXiv received v1.
+
+    NOT `update_date`. `update_date` is the day the OAI *metadata record* was last
+    touched — a DOI added, a category cross-listed, a bulk re-index — which for
+    27.7% of this corpus lands in a different year than the paper appeared, and for
+    4,286 papers lands in 2019-2026, years in which this corpus (arXiv IDs 0704-1805,
+    i.e. Apr 2007 - May 2018) published nothing at all. Every temporal analytic built
+    on `update_date` therefore reports months that never happened.
+    """
+    versions = rec.get("versions") or []
+    created = versions[0].get("created") if versions else None
+    if created:
+        try:
+            # RFC 2822, e.g. "Mon, 2 Apr 2007 19:18:42 GMT"
+            return parsedate_to_datetime(created)
+        except (TypeError, ValueError):
+            pass  # malformed v1 — fall through to the ID prefix
+    match = _ARXIV_YYMM.match(rec.get("id", "") or "")
+    if match:
+        yy, mm = int(match.group(1)), int(match.group(2))
+        if 1 <= mm <= 12:
+            return datetime(2000 + yy, mm, 1, tzinfo=timezone.utc)
+    return None
+
+
+def parse_updated_at(rec: dict) -> Optional[datetime]:
+    """Last metadata revision — this is what `update_date` actually means."""
+    raw = rec.get("update_date")
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,21 +93,14 @@ def parse_record(line: str) -> Optional[dict]:
             authors = [a.strip() for a in rec.get("authors", "").split(",") if a.strip()]
         # Parse categories
         categories = rec.get("categories", "").split()
-        # Parse date
-        published_at = None
-        if rec.get("update_date"):
-            try:
-                published_at = datetime.strptime(rec["update_date"], "%Y-%m-%d")
-            except ValueError:
-                pass
         return {
             "arxiv_id": rec["id"],
             "title": rec.get("title", "").replace("\n", " ").strip(),
             "authors": authors,
             "categories": categories,
             "abstract": rec.get("abstract", "").strip(),
-            "published_at": published_at,
-            "updated_at": published_at,
+            "published_at": parse_published_at(rec),
+            "updated_at": parse_updated_at(rec),
         }
     except Exception as e:
         logger.debug("Skipping malformed record: %s", e)

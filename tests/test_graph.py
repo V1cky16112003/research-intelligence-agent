@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 """Tests for graph/neo4j_client.py and graph/graph_sync.py — no live Neo4j connection."""
+import json
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -174,3 +176,99 @@ async def test_run_agent_opens_a_fresh_checkpointer_connection_per_call(monkeypa
         assert from_conn_string_mock.call_count == 2
         mock_saver.setup.assert_awaited_once()  # still only once
     graph_module._checkpointer_schema_ready = False
+
+
+# ---------------------------------------------------------------------------
+# graph_query_tool: Neo4j primary, Postgres fallback
+#
+# Neo4j AuraDB's free tier deleted this project's instance after a period of
+# inactivity, which silently removed a quarter of the agent's tool surface.
+# These tests pin the fallback so that failure mode cannot return.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("raw, expected", [
+    ("Yoshua Bengio", ["%Yoshua%", "%Bengio%"]),
+    ("Bengio Yoshua", ["%Bengio%", "%Yoshua%"]),
+    ("Geoffrey E. Hinton", ["%Geoffrey%", "%Hinton%"]),   # bare initial dropped
+    ("", ["%"]),
+    ("  ", ["%"]),
+    ("Y.", ["%Y.%"]),                                     # unusable input, kept verbatim
+])
+def test_author_patterns_tokenises_names(raw, expected):
+    """Names are matched token-AND so surname-first storage still resolves."""
+    from db.queries import _author_patterns
+
+    assert _author_patterns(raw) == expected
+
+
+@pytest.mark.asyncio
+async def test_graph_query_rejects_unknown_query_type():
+    from agent.tools import graph_query_tool
+
+    out = json.loads(await graph_query_tool("delete_everything", "x"))
+    assert "Unknown query_type" in out["error"]
+    assert out["results"] == []
+
+
+@pytest.mark.asyncio
+async def test_graph_query_prefers_neo4j_when_it_returns_rows():
+    from agent import tools
+
+    with patch.dict(os.environ, {"NEO4J_URI": "neo4j+s://fake"}), \
+         patch.object(tools, "_graph_query_neo4j",
+                      AsyncMock(return_value=[{"name": "Courville Aaron"}])) as neo, \
+         patch.object(tools, "_graph_query_postgres", AsyncMock()) as pg:
+        out = json.loads(await tools.graph_query_tool("coauthors", "Yoshua Bengio"))
+
+    assert out["summary"]["source"] == "neo4j"
+    assert out["count"] == 1
+    neo.assert_awaited_once()
+    pg.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_graph_query_falls_back_to_postgres_when_neo4j_is_unreachable():
+    """The exact failure that took the tool out: the host stopped resolving."""
+    from agent import tools
+
+    rows = [{"coauthor": "Courville Aaron", "shared_papers": 42}]
+    with patch.dict(os.environ, {"NEO4J_URI": "neo4j+s://deleted-instance"}), \
+         patch.object(tools, "_graph_query_neo4j",
+                      AsyncMock(side_effect=OSError("Failed to DNS resolve address"))), \
+         patch.object(tools, "_graph_query_postgres",
+                      AsyncMock(return_value=(rows, {"source": "postgres"}))):
+        out = json.loads(await tools.graph_query_tool("coauthors", "Yoshua Bengio"))
+
+    assert out["summary"]["source"] == "postgres"
+    assert out["results"] == rows
+
+
+@pytest.mark.asyncio
+async def test_graph_query_falls_back_when_neo4j_returns_no_rows():
+    """An exact-match Cypher miss on a natural-order name must not end the query."""
+    from agent import tools
+
+    rows = [{"coauthor": "Courville Aaron", "shared_papers": 42}]
+    with patch.dict(os.environ, {"NEO4J_URI": "neo4j+s://fake"}), \
+         patch.object(tools, "_graph_query_neo4j", AsyncMock(return_value=[])), \
+         patch.object(tools, "_graph_query_postgres",
+                      AsyncMock(return_value=(rows, {"source": "postgres"}))) as pg:
+        out = json.loads(await tools.graph_query_tool("papers_by_author", "Yoshua Bengio"))
+
+    pg.assert_awaited_once()
+    assert out["results"] == rows
+
+
+@pytest.mark.asyncio
+async def test_graph_query_skips_neo4j_entirely_when_unconfigured():
+    from agent import tools
+
+    env = {k: v for k, v in os.environ.items() if k != "NEO4J_URI"}
+    with patch.dict(os.environ, env, clear=True), \
+         patch.object(tools, "_graph_query_neo4j", AsyncMock()) as neo, \
+         patch.object(tools, "_graph_query_postgres",
+                      AsyncMock(return_value=([], {"source": "postgres"}))):
+        out = json.loads(await tools.graph_query_tool("coauthors", "X"))
+
+    neo.assert_not_awaited()
+    assert out["summary"]["source"] == "postgres"
