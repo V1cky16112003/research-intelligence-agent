@@ -238,7 +238,12 @@ async def run_evaluation(args: argparse.Namespace) -> dict:
         nvidia_api_key=os.getenv("NVIDIA_NIM_API_KEY", ""),
         gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
         redis_client=redis_client,
-        nim_model="meta/llama-3.3-70b-instruct",
+        # No nim_model override: this used to pin `meta/llama-3.3-70b-instruct`,
+        # which NIM retired on 2026-08-26 and now answers 410 Gone. Because Gemini
+        # is disabled below, that left the eval with a single working tier — when
+        # Groq hit its daily token cap the whole fallback chain was dead and answer
+        # generation failed outright, scoring 0.000 on every metric. Inheriting
+        # LLMGateway.NIM_MODEL keeps this in step with the agent's own routing.
         enable_gemini=False,  # Gemini free tier (5 RPM) is too small for CI — disabled for now
     )
     # Proactively cap outbound RPM to each provider's free-tier ceiling (Groq 30,

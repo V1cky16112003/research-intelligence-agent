@@ -39,7 +39,11 @@ class GatewayExhaustedError(Exception):
 PRICING_PER_1M_TOKENS: dict[str, tuple[float, float]] = {
     # (prompt, completion) — Groq gpt-oss-120b published rate
     "openai/gpt-oss-120b": (0.15, 0.75),
-    # NVIDIA NIM hosted Llama 3.1 70B — comparable third-party hosted rate
+    # NVIDIA NIM's current fallback model. Without an entry here the unknown-model
+    # path would price every NIM call at $0 and quietly erase the routing signal the
+    # dashboard exists to surface — exactly when calls are cascading off Groq.
+    "openai/gpt-oss-20b": (0.10, 0.50),
+    # Retired 2026-08-26 (410 Gone). Kept so historical llm_call_log rows still price.
     "meta/llama-3.1-70b-instruct": (0.35, 0.40),
     "gemini-2.5-flash": (0.30, 2.50),
 }
