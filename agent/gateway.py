@@ -51,14 +51,6 @@ def estimate_cost_usd(model: str, tokens_in: int, tokens_out: int) -> float:
     return (tokens_in / 1_000_000) * price_in + (tokens_out / 1_000_000) * price_out
 
 
-def _is_daily_quota_error(exc: RateLimitError) -> bool:
-    """True if a 429 is a daily token-quota error (e.g. Groq's TPD limit), not a
-    transient per-minute rate limit. Daily quotas reset on the order of minutes to
-    hours, so retrying within our [1s, 4s, 16s] backoff window can never succeed —
-    doing so only wastes ~21s per call before falling back to the next provider."""
-    return "per day" in str(exc).lower()
-
-
 class LLMGateway:
     """Routes LLM calls: Groq (primary) → NVIDIA NIM (fallback) → Gemini 2.5 Flash (fallback)."""
 
@@ -71,7 +63,14 @@ class LLMGateway:
     # chain-of-thought in a separate `reasoning` field instead of emitting <think>
     # blocks into `content`, where they would corrupt the planner/critic JSON parse.
     GROQ_MODEL = "openai/gpt-oss-120b"
-    NIM_MODEL = "meta/llama-3.1-70b-instruct"
+    # NIM retired `meta/llama-3.1-70b-instruct` on 2026-08-26; it now answers every
+    # request with 410 Gone, so the middle tier was a guaranteed-fail hop that only
+    # added latency before Gemini. A live probe of NIM's 82 advertised models found
+    # nearly all of them 404/410 on the free tier — `openai/gpt-oss-20b` is the one
+    # that still serves chat completions. It shares the gpt-oss reasoning-token
+    # behaviour of the Groq primary, so GPT_OSS_PREFIX below already routes it
+    # through the same reasoning_effort guard.
+    NIM_MODEL = "openai/gpt-oss-20b"
 
     # gpt-oss are reasoning models: they emit hidden reasoning tokens that are billed
     # against both `max_tokens` and Groq's 8000 TPM ceiling before any content appears.
@@ -264,8 +263,13 @@ class LLMGateway:
                 return await self._call_provider(client, model, messages, temperature, max_tokens, tools)
             except RateLimitError as exc:
                 last_exc = exc
-                if _is_daily_quota_error(exc):
-                    break  # won't clear within our retry window — fail over immediately
+                # Any 429 fails over immediately, not just the daily-quota kind.
+                # Groq's free tier caps at 8000 TPM, which a few concurrent /chat
+                # requests blow straight through; sitting out the [1s, 4s, 16s]
+                # backoff on a throttled provider while two healthy tiers idle cost
+                # ~21s per LLM call, and an agent run makes six to ten of them. That
+                # was the dominant term in an observed 486s p50 under 8-way load.
+                break
             except APIStatusError as exc:
                 if exc.status_code >= 500:
                     last_exc = exc

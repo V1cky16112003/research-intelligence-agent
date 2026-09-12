@@ -33,7 +33,7 @@ mlflow>=3.2.0
 evidently>=0.4.33
 
 # Tools
-duckduckgo-search>=6.2.6
+ddgs>=9.0.0
 python-dotenv>=1.0.1
 
 # Dev / CI

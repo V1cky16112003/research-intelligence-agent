@@ -698,6 +698,25 @@ async def get_experiments_summary(
 GRAPH_QUERY_TYPES = ("papers_by_author", "papers_by_category", "coauthors")
 
 
+def author_tokens(name: str) -> list[str]:
+    """The meaningful tokens of an author name, in their original case.
+
+    Shared by the Postgres ILIKE patterns below and the Neo4j Cypher templates in
+    `agent/tools.py`, so both backends agree on what counts as a match. Postgres
+    matches case-insensitively via ILIKE; the Cypher caller lowercases these to pair
+    with its own `toLower()`. Returns an empty list when there is nothing usable to
+    match on — callers must treat that as "no query", since a blank token matches
+    every author.
+    """
+    tokens = [t for t in re.split(r"[^\w'-]+", name or "") if len(t) > 1]
+    if tokens:
+        return tokens
+    # Single-initial or punctuation-only input: fall back to the raw string so the
+    # query stays well-formed and simply matches little.
+    stripped = (name or "").strip()
+    return [stripped] if stripped else []
+
+
 def _author_patterns(name: str) -> list[str]:
     """Split an author name into ILIKE patterns, one per meaningful token.
 
@@ -706,13 +725,8 @@ def _author_patterns(name: str) -> list[str]:
     trailing affiliations, while still keeping "Bengio Samy" out of the results
     for "Yoshua Bengio".
     """
-    tokens = [t for t in re.split(r"[^\w'-]+", name or "") if len(t) > 1]
-    if not tokens:
-        # Single-initial or punctuation-only input: fall back to the raw string
-        # so the query stays well-formed and simply matches little.
-        stripped = (name or "").strip()
-        return [f"%{stripped}%"] if stripped else ["%"]
-    return [f"%{t}%" for t in tokens]
+    tokens = author_tokens(name)
+    return [f"%{t}%" for t in tokens] if tokens else ["%"]
 
 
 async def author_variants(

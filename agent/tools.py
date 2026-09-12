@@ -221,7 +221,11 @@ async def web_search_tool(query: str) -> str:
         JSON string with search results (title, url, snippet).
     """
     try:
-        from duckduckgo_search import DDGS
+        # `ddgs` is the maintained package; the old `duckduckgo_search` name still
+        # imports but its backend returns an empty list for every query instead of
+        # raising, so the tool reported success with zero results and the reporter
+        # answered from nothing.
+        from ddgs import DDGS
 
         def _sync_search() -> list:
             with DDGS() as ddgs:
@@ -235,6 +239,17 @@ async def web_search_tool(query: str) -> str:
                 ]
 
         results = await asyncio.to_thread(_sync_search)
+        if not results:
+            # Surface the miss instead of returning a well-formed empty payload:
+            # an empty result set is indistinguishable from a broken backend to the
+            # reporter, which is exactly how the stale-package outage stayed silent.
+            return json.dumps({
+                "tool": "web_search",
+                "query": query,
+                "error": "web search returned no results",
+                "results": [],
+                "count": 0,
+            })
         return json.dumps({
             "tool": "web_search",
             "query": query,
@@ -248,30 +263,49 @@ async def web_search_tool(query: str) -> str:
 
 # Fixed, parameterized Cypher templates — deliberately not LLM-generated, so a
 # malformed or unbounded query can never reach the graph database.
+# The author templates match on *tokens*, not on `{name: $value}`. An exact match
+# looked correct but never fired in practice: the graph stores names surname-first
+# with affiliations ("Bengio Yoshua Universite de Montreal"), while the planner emits
+# natural order ("Yoshua Bengio"), so every author query returned zero rows and
+# silently fell through to the Postgres fallback — the graph was never the backend
+# that answered. Requiring every token to appear makes the lookup order-insensitive
+# and affiliation-tolerant, matching `db.queries.author_tokens` semantics exactly so
+# both backends return the same rows.
 _GRAPH_CYPHER_TEMPLATES = {
     "papers_by_author": (
-        "MATCH (p:Paper)-[:AUTHORED_BY]->(a:Author {name: $value}) "
-        "RETURN p.arxiv_id AS arxiv_id, p.title AS title LIMIT 20"
+        "MATCH (a:Author) WHERE all(t IN $tokens WHERE toLower(a.name) CONTAINS t) "
+        "MATCH (p:Paper)-[:AUTHORED_BY]->(a) "
+        "RETURN DISTINCT p.arxiv_id AS arxiv_id, p.title AS title LIMIT 20"
     ),
     "papers_by_category": (
         "MATCH (p:Paper)-[:HAS_CATEGORY]->(c:Category {name: $value}) "
         "RETURN p.arxiv_id AS arxiv_id, p.title AS title LIMIT 20"
     ),
     "coauthors": (
-        "MATCH (:Author {name: $value})<-[:AUTHORED_BY]-(:Paper)-[:AUTHORED_BY]->(a:Author) "
-        "WHERE a.name <> $value "
-        "RETURN DISTINCT a.name AS name LIMIT 20"
+        "MATCH (a:Author) WHERE all(t IN $tokens WHERE toLower(a.name) CONTAINS t) "
+        "MATCH (a)<-[:AUTHORED_BY]-(:Paper)-[:AUTHORED_BY]->(co:Author) "
+        "WHERE NOT all(t IN $tokens WHERE toLower(co.name) CONTAINS t) "
+        "RETURN DISTINCT co.name AS name LIMIT 20"
     ),
 }
 
 
 async def _graph_query_neo4j(query_type: str, value: str) -> list[dict]:
     """Run one fixed Cypher template. Raises if the graph is unreachable."""
+    from db.queries import author_tokens
     from graph.neo4j_client import get_driver
+
+    # Lowercased to pair with the templates' toLower(a.name).
+    tokens = [t.lower() for t in author_tokens(value)]
+    if query_type != "papers_by_category" and not tokens:
+        # No usable tokens: `CONTAINS ''` would match every author in the graph.
+        return []
 
     driver = get_driver()
     async with driver.session() as session:
-        result = await session.run(_GRAPH_CYPHER_TEMPLATES[query_type], {"value": value})
+        result = await session.run(
+            _GRAPH_CYPHER_TEMPLATES[query_type], {"value": value, "tokens": tokens}
+        )
         return await result.data()
 
 

@@ -67,7 +67,7 @@ Four-node state machine: **Planner → Executor → Critic → Reporter**
 - `registry.py` — module-level singleton (`set_gateway` / `get_gateway`); avoids LangGraph stripping non-schema state keys
 - `graph.py` — wires the graph, `init_graph()` sets up `AsyncPostgresSaver` at startup, falls back to in-memory if no DB
 - `tools.py` — `TOOL_DISPATCH` dict mapping tool name → async function: `rag_retrieval`, `sql_analytics`, `web_search`, `graph_query`. `sql_analytics_tool` dispatches on `query_type` — one of `corpus_stats`, `papers_by_category`, `papers_by_year`, `papers_by_month`, `top_authors`, `query_volume`, `provider_latency`, `experiments`, `cost_by_node`, `retry_overhead` — plus a `_QUERY_TYPE_ALIASES` map that absorbs the planner's near-misses (`total_papers` → `corpus_stats`). Aggregate questions ("how many papers?") route to `corpus_stats`, which returns one row. `rag_retrieval_tool` runs hybrid search (vector + BM25 RRF, 16 candidates) then LLM reranks down to top 8. `graph_query_tool` answers relational questions (co-authorship, shared subfields) via fixed parameterized Cypher templates against Neo4j — never LLM-generated Cypher — and falls back to equivalent Postgres queries when Neo4j is unset, unreachable, or returns nothing (see Knowledge Graph below).
-- `gateway.py` — `LLMGateway`: Groq (Llama 3.3 70B) primary → NVIDIA NIM (Llama 3.1 70B) → Gemini 2.5 Flash, cascading fallback on 429/5xx; wraps Upstash Redis cache
+- `gateway.py` — `LLMGateway`: Groq (`openai/gpt-oss-120b`) primary → NVIDIA NIM (`openai/gpt-oss-20b`) → Gemini 2.5 Flash, cascading fallback; wraps Upstash Redis cache. A 429 from any tier fails over *immediately* rather than serving the `[1s, 4s, 16s]` backoff — that backoff is reserved for 5xx. Groq's free tier caps at 8000 TPM, which a handful of concurrent `/chat` requests exceed; waiting it out cost ~21s per LLM call across the six-to-ten calls an agent run makes, and was the dominant term in an observed 486s p50 under 8-way concurrency. NIM's `meta/llama-3.1-70b-instruct` was retired 2026-08-26 and answers 410 Gone; a live probe of NIM's 82 advertised models found nearly all 404/410 on the free tier, leaving `openai/gpt-oss-20b` as the one servable chat model
 - `redis_client.py` — thin Upstash REST client (no persistent TCP connection)
 
 The Critic node returns `RETRY` or `PASS`; the graph loops back to Executor up to `MAX_RETRIES = 3` times before forcing Reporter.
@@ -78,7 +78,7 @@ The Critic node returns `RETRY` or `PASS`; the graph loops back to Executor up t
 
 ### Database (`db/`)
 
-Neon Postgres (free tier: 512 MB) with pgvector. Three tables: `papers`, `chunks` (768-dim HNSW index, nomic-embed-text-v2-moe), `query_audit_log`. `connection.py` owns the `AsyncConnectionPool`; `queries.py` holds the analytics layer; `apply_migration.py` runs a `.sql` file statement-by-statement in autocommit (needed because `VACUUM` and `CREATE INDEX CONCURRENTLY` can't run inside a transaction block) for machines with no `psql`.
+Neon Postgres (free tier: 512 MB) with pgvector. Three tables: `papers`, `chunks` (768-dim HNSW index, nomic-embed-text-v2-moe), `query_audit_log`. `connection.py` owns the `AsyncConnectionPool` — configured with `check=AsyncConnectionPool.check_connection` and `max_lifetime=300` because Neon's serverless tier drops idle connections and an unchecked pool hands the dead one straight to a caller (a sustained-load run failed mid-request with "the connection is closed" / "SSL connection has been closed unexpectedly"); this is the pool-level counterpart to the per-request checkpointer fix described in `agent/graph.py`. `queries.py` holds the analytics layer; `apply_migration.py` runs a `.sql` file statement-by-statement in autocommit (needed because `VACUUM` and `CREATE INDEX CONCURRENTLY` can't run inside a transaction block) for machines with no `psql`.
 
 **Storage (the 512 MB ceiling):** the database sat at 483 MB with 40k embedded chunks — a bulk `UPDATE` had already failed with `DiskFull` once. `db/migrations/003_halfvec_embeddings.sql` converts `chunks.embedding` from `vector(768)` (3080 bytes) to `halfvec(768)` (1544 bytes), halving both the stored payload and the HNSW index. **Applied 2026-09-08: 483 MB → 341 MB** (HNSW 156 → 78 MB, TOAST ~164 → 100 MB), headroom 29 MB → 171 MB, with no retrieval loss — 25 probe vectors returned identical top-10 neighbours before and after. Note the embeddings stay in TOAST: `TOAST_TUPLE_THRESHOLD` applies to the whole row, and with a ~901-byte `content` the row still exceeds 2 KB, so the heap barely moved (56 → 57 MB). Statement order is load-bearing — the `DROP INDEX` comes first because it frees the headroom the table rewrite needs. No deploy window is required: pgvector registers `vector → halfvec` as an *implicit* cast, so code still binding `%s::vector` keeps working against the converted column. Full rationale, rejected alternatives, rollback, and verification: `docs/storage.md`.
 
@@ -119,14 +119,22 @@ it already picks among the other three tools.
 `papers_in_category`).** Neo4j is the primary backend but not a hard dependency:
 the AuraDB free instance is deleted after inactivity, and when that happened the
 whole tool went down. `graph_query_tool` now tries Neo4j only when `NEO4J_URI`
-is set, and falls back to Postgres on exception *or on an empty result*. Empty
-counts as a fallback because the Cypher templates match `{name: $value}`
-exactly, while `papers.authors` stores names surname-first with affiliations
-("Bengio Yoshua Universite de Montreal") — so a natural-order name returned zero
-rows silently rather than erroring. The Postgres path splits the name into
-tokens and requires all of them (`a ILIKE ALL(%s)` over `UNNEST(p.authors)`),
-which makes matching order-insensitive. Both `papers.authors` and
-`papers.categories` are `TEXT[]`, so this needs no new tables.
+is set, and falls back to Postgres on exception *or on an empty result*.
+
+Both backends tokenize the author name and require every token to match, so they
+return the same rows and the fallback is invisible to the caller.
+`db.queries.author_tokens` is the single source of that tokenization: Postgres
+wraps the tokens as `%tok%` and applies `a ILIKE ALL(%s)` over
+`UNNEST(p.authors)`; the Cypher templates lowercase them and require
+`all(t IN $tokens WHERE toLower(a.name) CONTAINS t)`. The author templates
+deliberately do *not* match `{name: $value}` — an exact match looked right but
+never fired, because the graph stores names surname-first with affiliations
+("Bengio Yoshua Universite de Montreal") while the planner emits natural order
+("Yoshua Bengio"). Every author query therefore returned zero rows and fell
+through to Postgres, so Neo4j was never the backend that actually answered.
+An empty token list short-circuits before opening a session, since
+`CONTAINS ''` would otherwise match every author in the graph. Both
+`papers.authors` and `papers.categories` are `TEXT[]`, so this needs no new tables.
 
 ### Evaluation (`eval/`)
 

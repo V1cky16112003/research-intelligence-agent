@@ -67,7 +67,7 @@ Every `/chat` request writes an audit row (latency, tokens, tools called, chunk 
 |------|------|
 | Agent orchestration | LangGraph — Planner → Executor → Critic → Reporter |
 | Primary LLM | Groq (`openai/gpt-oss-120b`) |
-| Fallback LLMs | NVIDIA NIM (`meta/llama-3.1-70b-instruct`) → Gemini 2.5 Flash |
+| Fallback LLMs | NVIDIA NIM (`openai/gpt-oss-20b`) → Gemini 2.5 Flash |
 | Embeddings | nomic-embed-text-v2-moe (768-dim) |
 | Vector + SQL store | Postgres (Neon) with pgvector (halfvec) |
 | Knowledge graph | Neo4j AuraDB, Postgres fallback |

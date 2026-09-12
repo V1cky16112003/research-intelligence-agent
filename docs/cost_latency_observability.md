@@ -55,7 +55,7 @@ should make these questions answerable:
   If `retry_overhead` shows retries are a large fraction of total cost, the
   highest-leverage fix is tightening `CRITIC_SYSTEM`'s PASS bar or lowering
   `MAX_RETRIES`, not re-routing models.
-- **Model-routing recommendation:** NVIDIA NIM (`meta/llama-3.1-70b-instruct`) is
+- **Model-routing recommendation:** NVIDIA NIM (`openai/gpt-oss-20b`) is
   the known slow tier (prior incidents recorded 50s mean / 234s p95 when calls
   cascaded to it) and Gemini 2.5 Flash has the highest completion-token price in
   `PRICING_PER_1M_TOKENS` ($2.50/1M). If `by_node` shows a meaningful share of

@@ -34,6 +34,14 @@ async def init_pool(
         max_size=max_size,
         open=False,
         reconnect_timeout=30,
+        # Neon's serverless tier drops connections that have been idle, and without
+        # a check the pool hands the dead one straight to a caller: a sustained-load
+        # run surfaced "the connection is closed" and "SSL connection has been closed
+        # unexpectedly" mid-request, failing retrieval on a pool that looked healthy.
+        # check_connection validates (and transparently replaces) a connection before
+        # it leaves the pool. max_lifetime recycles them before Neon does it for us.
+        check=AsyncConnectionPool.check_connection,
+        max_lifetime=300,
     )
     await _pool.open(wait=True, timeout=30)
     logger.info("Database pool initialized")

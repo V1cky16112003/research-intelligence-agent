@@ -45,9 +45,9 @@ async def test_rag_retrieval_handles_error():
 
 @pytest.mark.asyncio
 async def test_web_search_returns_json():
-    pytest.importorskip("duckduckgo_search", reason="duckduckgo_search not installed")
+    pytest.importorskip("ddgs", reason="ddgs not installed")
     mock_results = [{"title": "Test", "href": "http://example.com", "body": "snippet"}]
-    with patch("duckduckgo_search.DDGS") as mock_ddgs_cls:
+    with patch("ddgs.DDGS") as mock_ddgs_cls:
         mock_ddgs = MagicMock()
         mock_ddgs.text.return_value = mock_results
         mock_ddgs_cls.return_value.__enter__ = MagicMock(return_value=mock_ddgs)
@@ -56,7 +56,29 @@ async def test_web_search_returns_json():
         result = await TOOL_DISPATCH["web_search"]("transformer models 2024")
         data = json.loads(result)
         assert data["tool"] == "web_search"
-        assert data["count"] >= 0
+        assert data["count"] == 1
+        assert data["results"][0]["url"] == "http://example.com"
+        assert "error" not in data
+
+
+@pytest.mark.asyncio
+async def test_web_search_empty_results_report_an_error():
+    """A backend that returns nothing must not look like a successful empty search.
+
+    The deprecated `duckduckgo_search` package silently returned [] for every query,
+    and the tool dutifully reported count=0 with no error, so the reporter answered
+    from an empty context instead of the agent retrying or falling back.
+    """
+    pytest.importorskip("ddgs", reason="ddgs not installed")
+    with patch("ddgs.DDGS") as mock_ddgs_cls:
+        mock_ddgs = MagicMock()
+        mock_ddgs.text.return_value = []
+        mock_ddgs_cls.return_value.__enter__ = MagicMock(return_value=mock_ddgs)
+        mock_ddgs_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+        data = json.loads(await TOOL_DISPATCH["web_search"]("nonsense query"))
+        assert data["count"] == 0
+        assert "error" in data
 
 
 def test_tool_definitions_valid():

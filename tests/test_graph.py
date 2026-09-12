@@ -272,3 +272,37 @@ async def test_graph_query_skips_neo4j_entirely_when_unconfigured():
 
     neo.assert_not_awaited()
     assert out["summary"]["source"] == "postgres"
+
+
+@pytest.mark.asyncio
+async def test_neo4j_author_query_is_order_insensitive():
+    """A natural-order name must reach Cypher as tokens, not an exact-match string.
+
+    The graph stores names surname-first with affiliations, so the old
+    `{name: $value}` template returned zero rows for "Yoshua Bengio" and the tool
+    silently fell through to Postgres — Neo4j never answered an author query.
+    """
+    from agent import tools
+
+    session = MagicMock()
+    session.run = AsyncMock(return_value=MagicMock(data=AsyncMock(return_value=[])))
+    driver = MagicMock()
+    driver.session.return_value.__aenter__ = AsyncMock(return_value=session)
+    driver.session.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("graph.neo4j_client.get_driver", return_value=driver):
+        await tools._graph_query_neo4j("papers_by_author", "Yoshua Bengio")
+
+    cypher, params = session.run.await_args.args
+    assert params["tokens"] == ["yoshua", "bengio"]
+    assert "$tokens" in cypher and "{name: $value}" not in cypher
+
+
+@pytest.mark.asyncio
+async def test_neo4j_author_query_refuses_empty_token_list():
+    """`CONTAINS ''` matches every author — an unusable name must query nothing."""
+    from agent import tools
+
+    with patch("graph.neo4j_client.get_driver") as get_driver:
+        assert await tools._graph_query_neo4j("papers_by_author", "  ") == []
+    get_driver.assert_not_called()
