@@ -7,6 +7,13 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# One run per branch: a newer push cancels the older run. Overlapping runs
+# share one Groq judge quota (8000 TPM), and on 2026-10-07 four overlapping
+# RAGAS gates 429'd each other into false faithfulness failures.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   PYTHONPATH: .
 

@@ -233,3 +233,21 @@ def test_mlflow_auth_sends_the_token_as_the_username(monkeypatch):
     import os
     assert os.environ["MLFLOW_TRACKING_USERNAME"] == "s3cret-token"
     assert os.environ["MLFLOW_TRACKING_PASSWORD"] == "s3cret-token"
+
+
+def test_check_thresholds_fails_on_unscored_samples():
+    """A judge 429 leaves samples unscored; averaging the survivors reported
+    faithfulness=0.424 from a fraction of the set (2026-10-07). Partial coverage
+    must fail as a judge error, distinct from a quality regression."""
+    from eval.run_ragas import _unscored
+    metrics = {"faithfulness": 0.9, "answer_relevancy": 0.9, "context_precision": 0.9,
+               "faithfulness_unscored": _unscored([0.9, float("nan"), None])}
+    failures = check_thresholds(metrics)
+    assert len(failures) == 1
+    assert "judge" in failures[0] and "2" in failures[0]
+
+
+def test_check_thresholds_passes_with_full_coverage():
+    metrics = {"faithfulness": 0.9, "answer_relevancy": 0.9, "context_precision": 0.9,
+               "faithfulness_unscored": 0}
+    assert check_thresholds(metrics) == []

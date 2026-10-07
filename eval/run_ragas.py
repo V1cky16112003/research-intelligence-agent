@@ -372,6 +372,8 @@ async def run_evaluation(args: argparse.Namespace) -> dict:
             "context_precision": _mean(result["context_precision"]),
             "num_questions": len(questions),
         }
+        for name in ("faithfulness", "answer_relevancy", "context_precision"):
+            metrics[f"{name}_unscored"] = _unscored(result[name])
 
     except ImportError as e:
         logger.error("RAGAS import failed: %s", e)
@@ -428,6 +430,11 @@ def log_to_mlflow(metrics: dict, args: argparse.Namespace) -> None:
         logger.warning("MLflow logging failed (non-fatal): %s", e)
 
 
+def _unscored(val) -> int:
+    """Count samples the judge never scored (None/NaN) — see check_thresholds."""
+    return sum(1 for v in list(val) if v is None or (isinstance(v, float) and math.isnan(v)))
+
+
 def check_thresholds(metrics: dict) -> list[str]:
     """Return list of failed threshold messages, empty if all pass."""
     failures = []
@@ -438,6 +445,16 @@ def check_thresholds(metrics: dict) -> list[str]:
         # silently bypass the gate instead of failing it.
         if math.isnan(value) or value < threshold:
             failures.append(f"{metric}={value:.3f} < threshold={threshold}")
+        # _mean drops unscored samples, so a judge that 429s on most of the set
+        # still yields an "average" — of whichever samples survived. That read as
+        # a faithfulness regression (0.424) when it was a quota outage. Fail it,
+        # but say what it actually is.
+        unscored = metrics.get(f"{metric}_unscored", 0)
+        if unscored:
+            failures.append(
+                f"{metric}: judge errored on {unscored} sample(s) (likely provider "
+                "rate limit) — score is from partial coverage, not a quality signal"
+            )
     return failures
 
 
