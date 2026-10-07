@@ -286,6 +286,7 @@ async def executor_node(state: dict) -> dict:
                 "aux_results": aux_results,
                 "refined_query": None,
                 "current_step": state.get("current_step", 0),
+                "_evidence_unchanged": True,
             }
 
         logger.info("Executor retry path — refined query: %s", refined_query[:80])
@@ -298,12 +299,17 @@ async def executor_node(state: dict) -> dict:
 
         # Merge new chunks into existing ones, deduped by chunk id, cap at 10
         new_chunks = result.get("results", [])
-        existing_ids = {c.get("id") for c in retrieved_chunks if c.get("id")}
+        before_ids = {c.get("id") for c in retrieved_chunks if c.get("id")}
+        existing_ids = set(before_ids)
         for chunk in new_chunks:
             if chunk.get("id") not in existing_ids:
                 retrieved_chunks.append(chunk)
                 existing_ids.add(chunk.get("id"))
         retrieved_chunks = retrieved_chunks[:10]
+        # If nothing new survived the dedupe and the cap, the reporter would redraft
+        # from byte-identical context and the critic would re-judge it — ~20s of LLM
+        # time that cannot change the answer. The graph ends on this flag instead.
+        evidence_unchanged = {c.get("id") for c in retrieved_chunks} <= before_ids
 
         tools_called.append("rag_retrieval")
         tool_results_acc.append({"step": "retry", "tool": "rag_retrieval", "result": result})
@@ -317,6 +323,7 @@ async def executor_node(state: dict) -> dict:
             "aux_results": aux_results,
             "refined_query": None,  # consumed — clear for next pass
             "current_step": state.get("current_step", 0),
+            "_evidence_unchanged": evidence_unchanged,
         }
 
     # --- Normal path: run all plan steps ---
@@ -384,6 +391,7 @@ async def executor_node(state: dict) -> dict:
         "sql_summary": sql_summary,
         "aux_results": aux_results,
         "current_step": len(plan),  # all steps done
+        "_evidence_unchanged": False,
     }
 
 
@@ -446,7 +454,24 @@ async def critic_node(state: dict) -> dict:
     sql = state.get("sql_results", [])
     draft = state.get("draft_answer") or ""
     sql_summary = state.get("sql_summary")
-    context = _build_context(chunks, sql, sql_summary, state.get("aux_results"))
+    aux = state.get("aux_results")
+
+    if sql or aux:
+        # The critic's only actionable verdict is RETRY, and a retry only ever
+        # re-runs rag_retrieval: the executor skips it outright for SQL-grounded
+        # answers, and for graph/web answers it would just mix unrelated chunks
+        # into a relational result. Live, these queries burned three full
+        # reporter+critic round trips each (~90s) to return the first draft.
+        logger.info("Critic skipped — answer grounded in SQL/graph/web results")
+        return {
+            "critique": "grounded in structured tool results; retry cannot add evidence",
+            "retry_count": state.get("retry_count", 0),
+            "refined_query": None,
+            "_critic_verdict": "PASS",
+            "llm_calls": [],
+        }
+
+    context = _build_context(chunks, sql, sql_summary, aux)
 
     messages = [
         {"role": "system", "content": CRITIC_SYSTEM},

@@ -639,3 +639,97 @@ def test_build_context_skips_aux_entries_with_no_rows():
 
     context = _build_context([], [], None, [{"tool": "graph_query", "results": []}])
     assert context == "No relevant context found in corpus."
+
+
+@pytest.mark.asyncio
+async def test_critic_skips_llm_when_sql_results_present():
+    """A retry cannot add evidence to an SQL-grounded answer (the executor skips
+    re-retrieval), so the critic must PASS without spending an LLM call."""
+    from agent.nodes import critic_node
+    from agent.registry import set_gateway
+    mock_gw = MagicMock()
+    mock_gw.chat = AsyncMock()
+    set_gateway(mock_gw)
+    state = {
+        "user_query": "How many papers per year?",
+        "draft_answer": "2017: 13512",
+        "retrieved_chunks": [],
+        "sql_results": [{"year": 2017, "count": 13512}],
+        "retry_count": 0,
+        "tokens_in": 0,
+        "tokens_out": 0,
+    }
+    result = await critic_node(state)
+    assert result["_critic_verdict"] == "PASS"
+    assert result["refined_query"] is None
+    assert result["llm_calls"] == []
+    mock_gw.chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_critic_skips_llm_when_aux_results_present():
+    """Graph/web results are not improved by a RAG re-retrieval either."""
+    from agent.nodes import critic_node
+    from agent.registry import set_gateway
+    mock_gw = MagicMock()
+    mock_gw.chat = AsyncMock()
+    set_gateway(mock_gw)
+    state = {
+        "user_query": "Who are Yoshua Bengio's co-authors?",
+        "draft_answer": "Aaron Courville (42)",
+        "retrieved_chunks": [],
+        "sql_results": [],
+        "aux_results": [{"tool": "graph_query", "summary": {}, "results": [{"coauthor": "Aaron Courville"}]}],
+        "retry_count": 0,
+        "tokens_in": 0,
+        "tokens_out": 0,
+    }
+    result = await critic_node(state)
+    assert result["_critic_verdict"] == "PASS"
+    mock_gw.chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_executor_retry_with_no_new_chunks_flags_unchanged():
+    """A re-retrieval that returns only chunks already in context changes nothing,
+    so the graph must end instead of re-running reporter + critic on it."""
+    from agent.graph import _after_executor
+    from agent.nodes import executor_node
+    rag_result = json.dumps({"tool": "rag_retrieval", "results": [{"id": 1, "content": "dup"}], "count": 1})
+
+    with patch("agent.tools.rag_retrieval_tool", AsyncMock(return_value=rag_result)):
+        state = {
+            "user_query": "test",
+            "plan": [],
+            "current_step": 0,
+            "tools_called": [],
+            "retrieved_chunks": [{"id": 1, "content": "existing chunk"}],
+            "sql_results": [],
+            "refined_query": "something more specific",
+        }
+        result = await executor_node(state)
+
+    assert result["_evidence_unchanged"] is True
+    assert _after_executor({**state, **result}) == "end"
+
+
+@pytest.mark.asyncio
+async def test_executor_retry_with_new_chunks_continues_to_reporter():
+    from agent.graph import _after_executor
+    from agent.nodes import executor_node
+    rag_result = json.dumps({"tool": "rag_retrieval", "results": [{"id": 2, "content": "new"}], "count": 1})
+
+    with patch("agent.tools.rag_retrieval_tool", AsyncMock(return_value=rag_result)):
+        state = {
+            "user_query": "test",
+            "plan": [],
+            "current_step": 0,
+            "tools_called": [],
+            "retrieved_chunks": [{"id": 1, "content": "existing chunk"}],
+            "sql_results": [],
+            "refined_query": "something more specific",
+        }
+        result = await executor_node(state)
+
+    assert result["_evidence_unchanged"] is False
+    assert _after_executor({**state, **result}) == "reporter"

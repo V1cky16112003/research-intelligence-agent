@@ -33,6 +33,14 @@ def _should_retry(state: dict) -> str:
     return "end"
 
 
+def _after_executor(state: dict) -> str:
+    """Conditional edge: skip the redraft when a retry fetched nothing new."""
+    if state.get("_evidence_unchanged"):
+        logger.info("Retry retrieved no new evidence — keeping the current draft")
+        return "end"
+    return "reporter"
+
+
 def build_graph(checkpointer=None):
     """Build and compile the LangGraph research agent."""
     workflow = StateGraph(AgentState)
@@ -44,7 +52,11 @@ def build_graph(checkpointer=None):
 
     workflow.set_entry_point("planner")
     workflow.add_edge("planner", "executor")
-    workflow.add_edge("executor", "reporter")
+    workflow.add_conditional_edges(
+        "executor",
+        _after_executor,
+        {"reporter": "reporter", "end": END},
+    )
     workflow.add_edge("reporter", "critic")
     workflow.add_conditional_edges(
         "critic",
@@ -131,6 +143,7 @@ async def run_agent(
         "tokens_out": 0,
         "llm_calls": [],
         "_critic_verdict": "PASS",
+        "_evidence_unchanged": False,
     }
 
     config = {"configurable": {"thread_id": session_id}}

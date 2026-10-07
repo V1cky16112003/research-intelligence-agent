@@ -70,7 +70,7 @@ Four-node state machine: **Planner → Executor → Critic → Reporter**
 - `gateway.py` — `LLMGateway`: Groq (`openai/gpt-oss-120b`) primary → NVIDIA NIM (`openai/gpt-oss-20b`) → Gemini 2.5 Flash, cascading fallback; wraps Upstash Redis cache. A 429 from any tier fails over *immediately* rather than serving the `[1s, 4s, 16s]` backoff — that backoff is reserved for 5xx. Groq's free tier caps at 8000 TPM, which a handful of concurrent `/chat` requests exceed; waiting it out cost ~21s per LLM call across the six-to-ten calls an agent run makes, and was the dominant term in an observed 486s p50 under 8-way concurrency. NIM's `meta/llama-3.1-70b-instruct` was retired 2026-08-26 and answers 410 Gone; a live probe of NIM's 82 advertised models found nearly all 404/410 on the free tier, leaving `openai/gpt-oss-20b` as the one servable chat model
 - `redis_client.py` — thin Upstash REST client (no persistent TCP connection)
 
-The Critic node returns `RETRY` or `PASS`; the graph loops back to Executor up to `MAX_RETRIES = 3` times before forcing Reporter.
+The Critic node returns `RETRY` or `PASS`; the graph loops back to Executor up to `MAX_RETRIES = 3` times before forcing Reporter. Two short-circuits keep that loop from spending LLM time it cannot use: the critic PASSes without an LLM call when the context holds SQL or `aux_results` (a retry only re-runs `rag_retrieval`, which can't improve a structured answer), and the executor sets `_evidence_unchanged` when a retry's chunks are all duplicates, routing straight to END with the existing draft. Before this, warm SQL/graph questions took 85–112s live — three wasted reporter+critic round trips each.
 
 ### API (`app/main.py`)
 
@@ -144,7 +144,7 @@ Note: running `run_ragas.py` locally on Python 3.14 exits 1 *after* printing a p
 
 ### Tests (`tests/`)
 
-`conftest.py` stubs `psycopg`, `psycopg_pool`, `pgvector`, `torch`, and `sentence_transformers` so the full test suite runs locally without Docker. 132 tests, 0 skipped. `PYTHONPATH=.` is required (set in CI env). `test_contextual_retrieval.py` covers embed prefix logic, reranker ordering/fallback, and BM25 query sanitization. `test_graph.py` covers the Neo4j driver singleton, graph sync idempotency, author-name tokenization, and the Neo4j → Postgres fallback paths. `test_gateway.py` covers the 3-tier Groq → NVIDIA NIM → Gemini fallback chain. `test_agent.py` covers `aux_results` routing and context rendering. `test_migration_runner.py` covers the migration SQL splitter (dollar-quoted bodies, string literals, statement ordering in 003).
+`conftest.py` stubs `psycopg`, `psycopg_pool`, `pgvector`, `torch`, and `sentence_transformers` so the full test suite runs locally without Docker. 139 tests, 0 skipped. `PYTHONPATH=.` is required (set in CI env). `test_contextual_retrieval.py` covers embed prefix logic, reranker ordering/fallback, and BM25 query sanitization. `test_graph.py` covers the Neo4j driver singleton, graph sync idempotency, author-name tokenization, and the Neo4j → Postgres fallback paths. `test_gateway.py` covers the 3-tier Groq → NVIDIA NIM → Gemini fallback chain. `test_agent.py` covers `aux_results` routing and context rendering. `test_migration_runner.py` covers the migration SQL splitter (dollar-quoted bodies, string literals, statement ordering in 003).
 
 ### Frontend (`frontend/`)
 

@@ -58,3 +58,4 @@ class AgentState(TypedDict):
 
     # Internal control (not checkpointed as objects, kept as plain values)
     _critic_verdict: str
+    _evidence_unchanged: bool  # executor retry found no new chunks → end, keep draft
