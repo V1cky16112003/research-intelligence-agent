@@ -301,10 +301,15 @@ _GRAPH_CYPHER_TEMPLATES = {
         "RETURN p.arxiv_id AS arxiv_id, p.title AS title LIMIT 20"
     ),
     "coauthors": (
+        # Same shape and order as db.queries.coauthors (coauthor, shared_papers,
+        # most frequent first). It used to return DISTINCT bare names in arbitrary
+        # order, so "most frequent co-authors" was unanswerable whenever Neo4j —
+        # rather than the Postgres fallback — was the backend that replied.
         "MATCH (a:Author) WHERE all(t IN $tokens WHERE toLower(a.name) CONTAINS t) "
-        "MATCH (a)<-[:AUTHORED_BY]-(:Paper)-[:AUTHORED_BY]->(co:Author) "
+        "MATCH (a)<-[:AUTHORED_BY]-(p:Paper)-[:AUTHORED_BY]->(co:Author) "
         "WHERE NOT all(t IN $tokens WHERE toLower(co.name) CONTAINS t) "
-        "RETURN DISTINCT co.name AS name LIMIT 20"
+        "RETURN co.name AS coauthor, count(DISTINCT p) AS shared_papers "
+        "ORDER BY shared_papers DESC, coauthor LIMIT 20"
     ),
 }
 

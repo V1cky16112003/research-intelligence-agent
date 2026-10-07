@@ -764,3 +764,23 @@ async def test_critic_skips_llm_when_only_sql_summary_present():
     })
     assert result["_critic_verdict"] == "PASS"
     mock_gw.chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_executor_new_plan_drops_previous_turn_context():
+    """Last turn's SQL summary must not leak into a new question's context —
+    live, a co-author question was answered next to a stale "2023" SQL summary,
+    and the follow-up "summarize that" summarized the wrong turn."""
+    from agent.nodes import executor_node
+    graph_json = json.dumps({"tool": "graph_query", "results": [{"coauthor": "X"}], "summary": {}})
+    with patch.dict("agent.tools.TOOL_DISPATCH", {"graph_query": AsyncMock(return_value=graph_json)}):
+        result = await executor_node({
+            "user_query": "Hinton co-authors", "plan": [{"tool": "graph_query", "args": {}}],
+            "current_step": 0, "tools_called": [],
+            "retrieved_chunks": [{"id": 9}], "sql_results": [{"n": 1}],
+            "sql_summary": {"filter_year": 2023}, "aux_results": [{"tool": "graph_query", "results": [{"old": 1}]}],
+        })
+    assert result["sql_summary"] == {}
+    assert result["sql_results"] == []
+    assert result["retrieved_chunks"] == []
+    assert result["aux_results"] == [{"tool": "graph_query", "summary": {}, "results": [{"coauthor": "X"}]}]

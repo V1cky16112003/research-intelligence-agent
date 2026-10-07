@@ -335,6 +335,12 @@ async def executor_node(state: dict) -> dict:
         logger.warning("Executor: no plan steps to run (current_step=%d, plan len=%d)", step_idx, len(plan))
         return {"tool_results": [{"error": "No steps in plan"}]}
 
+    # A non-empty plan is a new question: start from empty evidence. These fields
+    # are deliberately carried in the checkpoint so an empty-plan follow-up
+    # ("summarize that") can reuse them, but merging them into a *new* plan's
+    # results leaked the last turn's SQL summary into an unrelated answer.
+    retrieved_chunks, sql_results, sql_summary, aux_results = [], [], {}, []
+
     for i, step in enumerate(plan[step_idx:], start=step_idx):
         tool_name = step.get("tool", "rag_retrieval")
         args = step.get("args", {})
