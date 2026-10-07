@@ -54,3 +54,5 @@ to treat them as data.
 - Large local artifacts (`dataset/`, `graphify-out/`, `.serena/`, `.playwright-mcp/`)
   are now in `.gitignore`; before the audit they were untracked but unignored, one
   `git add -A` away from a 5.3 GB commit.
+
+**Hugging Face Spaces caveat (verified 2026-10-07):** the Spaces proxy answers CORS preflights itself and reflects any `Origin` (`https://evil.example` came back allowed after the allowlist deployed), so the app's allowlist is only enforced off-Spaces. CORS never stopped non-browser clients anyway; on Spaces the per-client rate limit is the effective quota guard.
