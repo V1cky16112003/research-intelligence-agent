@@ -3,8 +3,9 @@ WORKDIR /app
 RUN useradd -m -u 1000 appuser
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-RUN chown -R appuser:appuser /app
+# --chown instead of a trailing `RUN chown -R`: that duplicated every file into
+# a second layer and was the step the 2026-10-07 HF build died on.
+COPY --chown=appuser:appuser . .
 USER appuser
 ENV PYTHONPATH=/app
 ENV HF_HOME=/tmp/.cache/huggingface
