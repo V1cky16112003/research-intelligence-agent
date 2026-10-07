@@ -97,6 +97,10 @@ _QUERY_TYPE_ALIASES = {
 }
 
 
+# Query types over the papers table, as opposed to the audit/eval log tables.
+_CORPUS_QUERY_TYPES = {"papers_by_category", "papers_by_year", "papers_by_month", "top_authors"}
+
+
 async def sql_analytics_tool(
     query_type: str,
     category: str | None = None,
@@ -189,12 +193,27 @@ async def sql_analytics_tool(
             else:  # retry_overhead — the last member of SQL_QUERY_TYPES
                 results = await queries.retry_overhead_summary(conn)
 
+            if not results and query_type in _CORPUS_QUERY_TYPES:
+                stats = await queries.corpus_stats(conn)
+                coverage = f"{stats.get('earliest_publication')} to {stats.get('latest_publication')}"
+
         if not results:
             summary = dict(summary)
-            summary["note"] = (
-                f"No rows for {query_type}. This means the underlying table is empty "
-                "for this window, not that the corpus lacks the data."
-            )
+            if query_type in _CORPUS_QUERY_TYPES:
+                # Usually a year outside the corpus ("cs.LG in 2023"). Saying so lets
+                # the reporter answer the question; the old log-table note below
+                # claimed the opposite, and the empty result was then dropped for
+                # unrelated RAG chunks.
+                summary["corpus_coverage"] = coverage
+                summary["note"] = (
+                    f"No papers match these filters. The corpus only covers {coverage}, "
+                    "so filters outside that range return nothing."
+                )
+            else:
+                summary["note"] = (
+                    f"No rows for {query_type}. This means the underlying table is empty "
+                    "for this window, not that the corpus lacks the data."
+                )
 
         return json.dumps({
             "tool": "sql_analytics",

@@ -288,3 +288,21 @@ async def test_sql_analytics_rejects_unknown_query_type():
     data = json.loads(result)
     assert "error" in data
     assert data["results"] == []
+
+
+@pytest.mark.asyncio
+async def test_sql_analytics_empty_corpus_query_reports_coverage():
+    """Asking for a year outside the corpus must say so — the old note claimed
+    "the corpus does not lack the data", the opposite of the truth for 2023."""
+    stats = {"earliest_publication": "2007-04-01", "latest_publication": "2018-05-16"}
+    with (
+        _patched_query("papers_by_month", ([], {"total_papers": 0})),
+        patch("db.queries.corpus_stats", new_callable=AsyncMock, return_value=stats),
+    ):
+        result = await TOOL_DISPATCH["sql_analytics"](
+            query_type="papers_by_month", category="cs.LG", year=2023
+        )
+
+    summary = json.loads(result)["summary"]
+    assert summary["corpus_coverage"] == "2007-04-01 to 2018-05-16"
+    assert "outside" in summary["note"] or "no papers" in summary["note"].lower()

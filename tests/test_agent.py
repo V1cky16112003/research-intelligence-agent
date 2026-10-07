@@ -733,3 +733,34 @@ async def test_executor_retry_with_new_chunks_continues_to_reporter():
 
     assert result["_evidence_unchanged"] is False
     assert _after_executor({**state, **result}) == "reporter"
+
+
+@pytest.mark.asyncio
+async def test_executor_keeps_empty_sql_summary():
+    """A zero-row SQL answer is still an answer: its summary must reach the
+    reporter instead of being dropped in favour of unrelated RAG chunks."""
+    from agent.nodes import _build_context, executor_node
+    sql_json = json.dumps({"tool": "sql_analytics", "results": [], "count": 0,
+                           "summary": {"total_papers": 0, "corpus_coverage": "2007-04-01 to 2018-05-16"}})
+    with patch.dict("agent.tools.TOOL_DISPATCH", {"sql_analytics": AsyncMock(return_value=sql_json)}):
+        result = await executor_node({
+            "user_query": "cs.LG per month in 2023", "plan": [{"tool": "sql_analytics", "args": {}}],
+            "current_step": 0, "tools_called": [], "retrieved_chunks": [], "sql_results": [],
+        })
+    assert result["sql_summary"]["corpus_coverage"] == "2007-04-01 to 2018-05-16"
+    assert "2018-05-16" in _build_context([], [], result["sql_summary"])
+
+
+@pytest.mark.asyncio
+async def test_critic_skips_llm_when_only_sql_summary_present():
+    from agent.nodes import critic_node
+    from agent.registry import set_gateway
+    mock_gw = MagicMock()
+    mock_gw.chat = AsyncMock()
+    set_gateway(mock_gw)
+    result = await critic_node({
+        "user_query": "q", "draft_answer": "none in 2023", "retrieved_chunks": [{"id": 1}],
+        "sql_results": [], "sql_summary": {"total_papers": 0}, "retry_count": 0,
+    })
+    assert result["_critic_verdict"] == "PASS"
+    mock_gw.chat.assert_not_called()

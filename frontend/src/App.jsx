@@ -27,9 +27,9 @@ const styles = {
 
 const EXAMPLE_QUERIES = [
   "What are the key findings on attention mechanisms in transformers?",
-  "How many cs.LG papers were published per month in 2023?",
-  "Summarize recent advances in diffusion models for image generation",
-  "Compare RAG vs fine-tuning approaches for LLM knowledge updates",
+  "How many cs.LG papers were published per month in 2017?",
+  "How do GANs suffer from mode collapse, and what fixes were proposed?",
+  "Who are Yoshua Bengio's most frequent co-authors?",
 ]
 
 function LoadingDots() {
@@ -146,7 +146,7 @@ export default function App() {
           Research Intelligence Agent
           <span style={styles.providerBadge}>LangGraph + pgvector</span>
         </div>
-        <div style={styles.subtitle}>Ask questions about ArXiv ML papers — semantic search + SQL analytics</div>
+        <div style={styles.subtitle}>Ask about 50k ArXiv ML papers (2007–2018) — semantic search, SQL analytics, co-author graph</div>
       </div>
 
       <div style={styles.messages}>

@@ -369,8 +369,10 @@ async def executor_node(state: dict) -> dict:
 
         if tool_name == "rag_retrieval" and result.get("results"):
             retrieved_chunks = result["results"]
-        elif tool_name == "sql_analytics" and result.get("results"):
-            sql_results = result["results"]
+        elif tool_name == "sql_analytics" and (result.get("results") or result.get("summary")):
+            # A zero-row result with a summary is still the answer ("no papers in
+            # 2023; the corpus ends in 2018") and must reach the reporter.
+            sql_results = result.get("results") or []
             sql_summary = result.get("summary") or {}
         elif result.get("results"):
             # graph_query, web_search, and anything added later. Without this
@@ -456,7 +458,7 @@ async def critic_node(state: dict) -> dict:
     sql_summary = state.get("sql_summary")
     aux = state.get("aux_results")
 
-    if sql or aux:
+    if sql or sql_summary or aux:
         # The critic's only actionable verdict is RETRY, and a retry only ever
         # re-runs rag_retrieval: the executor skips it outright for SQL-grounded
         # answers, and for graph/web answers it would just mix unrelated chunks
