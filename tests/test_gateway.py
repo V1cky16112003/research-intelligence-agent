@@ -259,3 +259,20 @@ async def test_truncated_empty_generation_is_logged(caplog):
         await gw._call_provider(gw._groq, "openai/gpt-oss-120b", [], 0.0, 128, None)
 
     assert "empty content" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_groq_model_override_is_used():
+    """GROQ_MODEL/NIM_MODEL env overrides let a retired model be swapped by
+    changing a Space secret instead of shipping code."""
+    from agent.gateway import LLMGateway
+    gw = LLMGateway(groq_api_key="k", gemini_api_key="k", groq_model="openai/gpt-oss-20b")
+    gw._call_provider = AsyncMock(return_value={"content": "ok", "tokens_in": 1, "tokens_out": 1})
+    await gw.chat([{"role": "user", "content": "hi"}], cache=False)
+    assert gw._call_provider.await_args.args[1] == "openai/gpt-oss-20b"
+
+
+def test_settings_expose_model_overrides():
+    from app.main import Settings
+    s = Settings(_env_file=None, groq_model="a", nim_model="b")
+    assert (s.groq_model, s.nim_model) == ("a", "b")

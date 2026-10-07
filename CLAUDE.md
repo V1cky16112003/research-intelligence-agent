@@ -144,7 +144,7 @@ Note: running `run_ragas.py` locally on Python 3.14 exits 1 *after* printing a p
 
 ### Tests (`tests/`)
 
-`conftest.py` stubs `psycopg`, `psycopg_pool`, `pgvector`, `torch`, and `sentence_transformers` so the full test suite runs locally without Docker. 146 tests, 0 skipped. `PYTHONPATH=.` is required (set in CI env). `test_contextual_retrieval.py` covers embed prefix logic, reranker ordering/fallback, and BM25 query sanitization. `test_graph.py` covers the Neo4j driver singleton, graph sync idempotency, author-name tokenization, and the Neo4j → Postgres fallback paths. `test_gateway.py` covers the 3-tier Groq → NVIDIA NIM → Gemini fallback chain. `test_agent.py` covers `aux_results` routing and context rendering. `test_migration_runner.py` covers the migration SQL splitter (dollar-quoted bodies, string literals, statement ordering in 003).
+`conftest.py` stubs `psycopg`, `psycopg_pool`, `pgvector`, `torch`, and `sentence_transformers` so the full test suite runs locally without Docker. 148 tests, 0 skipped. `PYTHONPATH=.` is required (set in CI env). `test_contextual_retrieval.py` covers embed prefix logic, reranker ordering/fallback, and BM25 query sanitization. `test_graph.py` covers the Neo4j driver singleton, graph sync idempotency, author-name tokenization, and the Neo4j → Postgres fallback paths. `test_gateway.py` covers the 3-tier Groq → NVIDIA NIM → Gemini fallback chain. `test_agent.py` covers `aux_results` routing and context rendering. `test_migration_runner.py` covers the migration SQL splitter (dollar-quoted bodies, string literals, statement ordering in 003).
 
 ### Frontend (`frontend/`)
 
@@ -159,6 +159,7 @@ UPSTASH_REDIS_REST_TOKEN  # Upstash auth token
 GROQ_API_KEY              # Primary LLM
 NVIDIA_NIM_API_KEY        # Second-tier LLM fallback + RAGAS judge (chat + embeddings)
 GEMINI_API_KEY            # Third-tier LLM fallback
+GROQ_MODEL / NIM_MODEL    # Optional model-pin overrides (swap a retired model without a deploy)
 NEO4J_URI                 # Neo4j AuraDB connection URI (graph_query tool)
 NEO4J_USER                # Neo4j AuraDB username
 NEO4J_PASSWORD            # Neo4j AuraDB password

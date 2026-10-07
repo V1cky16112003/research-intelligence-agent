@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     # Comma-separated origin allowlist. Defaults to the production Vercel domain
     # plus the Vite dev server; "*" let any site spend this API's provider quota.
     # Override with ALLOWED_ORIGINS (e.g. a preview URL, or "*" to reopen).
+    # Model pins, overridable so a provider retirement (NIM has silently 410'd two
+    # pinned models) is a secret change, not a code deploy. Empty = gateway default.
+    groq_model: str = ""
+    nim_model: str = ""
     allowed_origins: str = "https://frontend-vert-eight-61.vercel.app,http://localhost:5173"
     # /chat is unauthenticated and each request fans out to ~8 provider calls on
     # personal API keys, so an open endpoint is a direct quota-drain amplifier.
@@ -86,6 +90,8 @@ async def lifespan(app: FastAPI):
         nvidia_api_key=settings.nvidia_nim_api_key,
         gemini_api_key=settings.gemini_api_key,
         redis_client=redis_client,
+        groq_model=settings.groq_model,
+        nim_model=settings.nim_model,
     )
     set_gateway(gateway)
 

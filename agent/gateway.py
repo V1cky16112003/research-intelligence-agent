@@ -97,6 +97,7 @@ class LLMGateway:
         redis_client=None,
         nim_model: str = "",
         enable_gemini: bool = True,
+        groq_model: str = "",
     ) -> None:
         self._groq = AsyncOpenAI(
             api_key=groq_api_key,
@@ -112,12 +113,13 @@ class LLMGateway:
         )
         self._redis = redis_client
         self._nim_model = nim_model or self.NIM_MODEL
+        self._groq_model = groq_model or self.GROQ_MODEL
         self._enable_gemini = enable_gemini
 
     async def chat(
         self,
         messages: list[dict[str, Any]],
-        model: str = GROQ_MODEL,
+        model: str | None = None,
         temperature: float = 0.1,
         max_tokens: int = 2048,
         tools: list[dict] | None = None,
@@ -153,6 +155,7 @@ class LLMGateway:
         start = time.monotonic()
 
         # Cache check
+        model = model or self._groq_model
         cache_key = self._cache_key(model, messages, temperature, max_tokens, tools)
         if cache and self._redis:
             try:
