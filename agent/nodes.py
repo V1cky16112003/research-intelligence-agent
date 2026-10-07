@@ -71,6 +71,7 @@ REPORTER_SYSTEM = """You are a research report writer. Answer the question using
 - If the context does not contain enough information to answer, say so explicitly rather than filling gaps from memory
 - Be specific and factual, citing papers by title and arxiv_id when available
 - If SQL results are present, include relevant statistics
+- If the SQL Analytics Summary has a "note" (e.g. the corpus date range when nothing matched), state it — it explains the result
 - Keep the answer focused and under 400 words
 - End with a brief "Sources" list if there are citations"""
 
