@@ -17,7 +17,7 @@ demo offline. Everything below is sized against that, not against data exfiltrat
 | Issue | Mitigation |
 |---|---|
 | Unbounded fan-out from anonymous callers | Fixed-window rate limit, `CHAT_RATE_LIMIT_PER_MINUTE` (default 20). Set to `0` to disable. |
-| `Access-Control-Allow-Origin: *` | `ALLOWED_ORIGINS` allowlist. Still defaults to `*` so the deployed Vercel frontend keeps working — **set it to that frontend's URL**. |
+| `Access-Control-Allow-Origin: *` | `ALLOWED_ORIGINS` allowlist. Defaults to the production frontend (`https://frontend-vert-eight-61.vercel.app`) and `http://localhost:5173`; set `ALLOWED_ORIGINS` to override. |
 | Unbounded prompt size inflating token spend | `ChatRequest.query` capped at 4,000 chars, `session_id` at 200. |
 | Internal topology leaked in errors | `/chat` returns a generic message; the detail goes to the log. Previously it returned `str(e)`, and psycopg connection errors embed host/database/user while provider SDK errors embed request URLs. |
 | `GET /analytics/cost?days=` unbounded | `Query(ge=1, le=3650)` at the edge and `_clamp_days()` in `db/queries.py`. An unclamped value raised `interval out of range` — a 500 from a query string. |

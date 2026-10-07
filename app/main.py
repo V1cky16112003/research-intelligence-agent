@@ -33,9 +33,10 @@ class Settings(BaseSettings):
     neo4j_uri: str = ""
     neo4j_user: str = ""
     neo4j_password: str = ""
-    # Comma-separated origin allowlist. Defaults to "*" to preserve the deployed
-    # Vercel frontend; set ALLOWED_ORIGINS to that frontend's URL to lock it down.
-    allowed_origins: str = "*"
+    # Comma-separated origin allowlist. Defaults to the production Vercel domain
+    # plus the Vite dev server; "*" let any site spend this API's provider quota.
+    # Override with ALLOWED_ORIGINS (e.g. a preview URL, or "*" to reopen).
+    allowed_origins: str = "https://frontend-vert-eight-61.vercel.app,http://localhost:5173"
     # /chat is unauthenticated and each request fans out to ~8 provider calls on
     # personal API keys, so an open endpoint is a direct quota-drain amplifier.
     # Generous enough that no human user notices; low enough to stop a script.
