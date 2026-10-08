@@ -1,4 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import './markdown.css'
 
 const API_URL = import.meta.env.VITE_API_URL || ''
 
@@ -10,12 +13,12 @@ const styles = {
   subtitle: { fontSize: '13px', color: '#666', marginTop: '4px' },
   providerBadge: { display: 'inline-block', fontSize: '11px', padding: '2px 8px', borderRadius: '12px', marginLeft: '8px', background: '#1a1a2e', color: '#6c8ebf' },
   messages: { flex: 1, overflowY: 'auto', padding: '20px 0', display: 'flex', flexDirection: 'column', gap: '16px' },
-  userMsg: { alignSelf: 'flex-end', background: '#1e3a5f', padding: '12px 16px', borderRadius: '16px 16px 4px 16px', maxWidth: '75%', fontSize: '15px', lineHeight: '1.5' },
-  assistantMsg: { alignSelf: 'flex-start', background: '#1a1a1a', padding: '12px 16px', borderRadius: '16px 16px 16px 4px', maxWidth: '85%', fontSize: '15px', lineHeight: '1.6', border: '1px solid #2a2a2a' },
+  userMsg: { alignSelf: 'flex-end', background: '#1e3a5f', padding: '12px 16px', borderRadius: '16px 16px 4px 16px', maxWidth: '75%', fontSize: '15px', lineHeight: '1.5', whiteSpace: 'pre-wrap' },
+  assistantMsg: { alignSelf: 'flex-start', background: '#1a1a1a', padding: '16px 20px', borderRadius: '16px 16px 16px 4px', maxWidth: '92%', width: 'fit-content', fontSize: '15px', lineHeight: '1.6', border: '1px solid #2a2a2a' },
   citations: { marginTop: '12px', padding: '10px', background: '#111', borderRadius: '8px', fontSize: '13px', border: '1px solid #222' },
   citationTitle: { color: '#888', marginBottom: '6px', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.05em' },
   citationItem: { padding: '6px 0', borderBottom: '1px solid #1a1a1a', color: '#aaa' },
-  sqlResults: { marginTop: '10px', padding: '10px', background: '#0a1628', borderRadius: '8px', fontSize: '12px', color: '#6c8ebf', border: '1px solid #1a2a4a', fontFamily: 'monospace', maxHeight: '200px', overflowY: 'auto' },
+  sqlResults: { marginTop: '12px', background: '#0d1219', borderRadius: '8px', border: '1px solid #1a2a4a', maxHeight: '320px', overflowY: 'auto' },
   loadingDots: { alignSelf: 'flex-start', padding: '12px 16px', background: '#1a1a1a', borderRadius: '16px', border: '1px solid #2a2a2a' },
   coldStartBanner: { background: '#1a1a00', border: '1px solid #333300', borderRadius: '8px', padding: '10px 14px', fontSize: '13px', color: '#aaaa00', marginBottom: '12px', textAlign: 'center' },
   inputArea: { padding: '16px 0 24px', borderTop: '1px solid #2a2a2a', display: 'flex', gap: '8px' },
@@ -32,17 +35,6 @@ const EXAMPLE_QUERIES = [
   "Who are Yoshua Bengio's most frequent co-authors?",
 ]
 
-function LoadingDots() {
-  return (
-    <div style={styles.loadingDots}>
-      <span style={{ animation: 'pulse 1.4s ease-in-out infinite', display: 'inline-block' }}>●</span>
-      <span style={{ animation: 'pulse 1.4s ease-in-out 0.2s infinite', display: 'inline-block', margin: '0 4px' }}>●</span>
-      <span style={{ animation: 'pulse 1.4s ease-in-out 0.4s infinite', display: 'inline-block' }}>●</span>
-      <style>{`@keyframes pulse { 0%,80%,100%{opacity:.2} 40%{opacity:1} }`}</style>
-    </div>
-  )
-}
-
 function Citations({ citations }) {
   if (!citations || citations.length === 0) return null
   return (
@@ -54,21 +46,77 @@ function Citations({ citations }) {
           {c.authors && c.authors.length > 0 && (
             <span style={{ color: '#666', marginLeft: '6px' }}>— {c.authors.slice(0, 2).join(', ')}{c.authors.length > 2 ? ' et al.' : ''}</span>
           )}
-          {c.arxiv_id && <span style={{ color: '#4a6ea8', marginLeft: '6px', fontSize: '11px' }}>[{c.arxiv_id}]</span>}
+          {c.arxiv_id && <a href={`https://arxiv.org/abs/${c.arxiv_id}`} target="_blank" rel="noopener noreferrer" style={{ color: '#4a6ea8', marginLeft: '6px', fontSize: '11px', textDecoration: 'none' }}>[{c.arxiv_id}]</a>}
         </div>
       ))}
     </div>
   )
 }
 
+function formatCell(value) {
+  if (value === null || value === undefined) return '—'
+  if (Array.isArray(value)) return value.join(', ')
+  if (typeof value === 'number') return Number.isInteger(value) ? value.toLocaleString() : value.toLocaleString(undefined, { maximumFractionDigits: 3 })
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
 function SqlResults({ results }) {
   if (!results || results.length === 0) return null
+  const rows = results.slice(0, 50)
+  const columns = [...new Set(rows.flatMap(r => Object.keys(r)))]
   return (
     <div style={styles.sqlResults}>
-      <div style={{ color: '#4a6ea8', marginBottom: '6px', fontSize: '11px' }}>SQL ANALYTICS RESULTS</div>
-      <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{JSON.stringify(results.slice(0, 10), null, 2)}</pre>
+      <div style={{ ...styles.citationTitle, padding: '10px 12px 4px', color: '#4a6ea8' }}>
+        Data ({results.length} row{results.length === 1 ? '' : 's'}{results.length > rows.length ? `, showing ${rows.length}` : ''})
+      </div>
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead><tr>{columns.map(c => <th key={c}>{c.replace(/_/g, ' ')}</th>)}</tr></thead>
+          <tbody>
+            {rows.map((row, i) => (
+              <tr key={i}>
+                {columns.map(c => <td key={c} className={typeof row[c] === 'number' ? 'num' : undefined}>{formatCell(row[c])}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
+}
+
+function StatusTrail({ steps, active }) {
+  if (!steps.length && !active) return null
+  return (
+    <div style={{ ...styles.loadingDots, display: 'flex', flexDirection: 'column', gap: '2px', minWidth: '260px' }}>
+      {steps.map((s, i) => <div key={i} className="status-line done fade-in">{s}</div>)}
+      {active && <div className="status-line active">{steps.length ? 'Working…' : 'Planning…'}</div>}
+    </div>
+  )
+}
+
+// Reads a text/event-stream body and calls onEvent(name, data) per event.
+async function readSSE(res, onEvent) {
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let sep
+    while ((sep = buffer.indexOf('\n\n')) !== -1) {
+      const block = buffer.slice(0, sep)
+      buffer = buffer.slice(sep + 2)
+      let name = 'message', data = ''
+      for (const line of block.split('\n')) {
+        if (line.startsWith('event: ')) name = line.slice(7)
+        else if (line.startsWith('data: ')) data += line.slice(6)
+      }
+      if (data) onEvent(name, JSON.parse(data))
+    }
+  }
 }
 
 export default function App() {
@@ -77,12 +125,13 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [sessionId, setSessionId] = useState(null)
   const [slowStart, setSlowStart] = useState(false)
+  const [steps, setSteps] = useState([])
   const bottomRef = useRef(null)
   const inputRef = useRef(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, loading])
+  }, [messages, loading, steps])
 
   async function sendMessage(query) {
     if (!query.trim() || loading) return
@@ -96,26 +145,33 @@ export default function App() {
     const slowTimer = setTimeout(() => setSlowStart(true), 3000)
 
     try {
-      const res = await fetch(`${API_URL}/chat`, {
+      const res = await fetch(`${API_URL}/chat/stream`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
         body: JSON.stringify({ query, session_id: sessionId }),
       })
       clearTimeout(slowTimer)
       setSlowStart(false)
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
 
-      if (data.session_id) setSessionId(data.session_id)
-
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: data.answer,
-        citations: data.citations,
-        sqlResults: data.sql_results,
-        provider: data.provider,
-      }])
+      let answered = false
+      await readSSE(res, (event, data) => {
+        if (event === 'status') {
+          setSteps(prev => [...prev, data.message])
+        } else if (event === 'answer') {
+          answered = true
+          if (data.session_id) setSessionId(data.session_id)
+          setMessages(prev => [...prev, {
+            role: 'assistant',
+            content: data.answer,
+            citations: data.citations,
+            sqlResults: data.sql_results,
+            provider: data.provider,
+          }])
+        }
+      })
+      if (!answered) throw new Error('stream ended before an answer arrived')
     } catch (err) {
       clearTimeout(slowTimer)
       setSlowStart(false)
@@ -128,6 +184,7 @@ export default function App() {
       }])
     } finally {
       setLoading(false)
+      setSteps([])
       setTimeout(() => inputRef.current?.focus(), 100)
     }
   }
@@ -162,8 +219,20 @@ export default function App() {
         )}
 
         {messages.map((msg, i) => (
-          <div key={i} style={msg.role === 'user' ? styles.userMsg : styles.assistantMsg}>
-            {msg.content}
+          <div key={i} className="fade-in" style={msg.role === 'user' ? styles.userMsg : styles.assistantMsg}>
+            {msg.role === 'user' ? msg.content : (
+              <div className="md">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    a: props => <a {...props} target="_blank" rel="noopener noreferrer" />,
+                    table: props => <div className="table-wrap"><table {...props} /></div>,
+                  }}
+                >
+                  {msg.content || ''}
+                </ReactMarkdown>
+              </div>
+            )}
             {msg.role === 'assistant' && (
               <>
                 <Citations citations={msg.citations} />
@@ -181,7 +250,7 @@ export default function App() {
             API is waking up from sleep — this may take 10-30s on first request...
           </div>
         )}
-        {loading && <LoadingDots />}
+        {loading && <StatusTrail steps={steps} active />}
         <div ref={bottomRef} />
       </div>
 

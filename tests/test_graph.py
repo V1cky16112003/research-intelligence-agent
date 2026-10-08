@@ -92,19 +92,28 @@ async def test_run_agent_omits_continuity_fields_from_initial_state():
     and query surviving."""
     import agent.graph as graph_module
 
-    mock_graph = MagicMock()
-    mock_graph.ainvoke = AsyncMock(return_value={
+    final = {
         "final_report": "answer", "citations": [], "sql_results": None,
         "tools_called": [], "llm_provider": "groq", "tokens_in": 1, "tokens_out": 1,
-    })
+    }
+    sent = []
+
+    async def fake_astream(state, config=None, stream_mode=None):
+        sent.append(state)
+        yield "updates", {"reporter": {"final_report": "answer"}}
+        yield "values", final
+
+    mock_graph = MagicMock()
+    mock_graph.astream = fake_astream
     original_graph = graph_module._graph
     graph_module._graph = mock_graph
     try:
-        await graph_module.run_agent("summarize that in one sentence", "session-1")
+        result = await graph_module.run_agent("summarize that in one sentence", "session-1")
     finally:
         graph_module._graph = original_graph
 
-    sent_state = mock_graph.ainvoke.call_args[0][0]
+    assert result["final_report"] == "answer"
+    sent_state = sent[0]
     for continuity_key in ("retrieved_chunks", "sql_results", "citations", "previous_user_query"):
         assert continuity_key not in sent_state, (
             f"{continuity_key!r} must be omitted so the checkpointer's prior-turn "

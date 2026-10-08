@@ -13,6 +13,7 @@ with a better query before re-drafting.
 """
 import logging
 import os
+from collections.abc import AsyncIterator
 from typing import Any
 
 from langgraph.graph import END, StateGraph
@@ -109,6 +110,21 @@ async def run_agent(
     Returns:
         {final_report, citations, sql_results, tools_called, provider, tokens_in, tokens_out}
     """
+    result: dict[str, Any] = {}
+    async for event in stream_agent(user_query, session_id):
+        if event["type"] == "result":
+            result = event["data"]
+    return result
+
+
+async def stream_agent(
+    user_query: str,
+    session_id: str,
+) -> AsyncIterator[dict[str, Any]]:
+    """
+    Run the agent, yielding `{"type": "node", "node", "update"}` as each graph node
+    finishes and a final `{"type": "result", "data"}` shaped like run_agent's return.
+    """
     global _checkpointer_schema_ready
     database_url = os.getenv("DATABASE_URL", "")
 
@@ -147,6 +163,7 @@ async def run_agent(
     }
 
     config = {"configurable": {"thread_id": session_id}}
+    state_holder: dict[str, Any] = {}
 
     try:
         if database_url:
@@ -156,16 +173,19 @@ async def run_agent(
                     await checkpointer.setup()
                     _checkpointer_schema_ready = True
                 graph = build_graph(checkpointer=checkpointer)
-                final_state = await graph.ainvoke(initial_state, config=config)
+                async for event in _stream_graph(graph, initial_state, config, state_holder):
+                    yield event
         else:
             if _graph is None:
                 raise RuntimeError("Agent graph not initialized. Call init_graph() first.")
-            final_state = await _graph.ainvoke(initial_state, config=config)
+            async for event in _stream_graph(_graph, initial_state, config, state_holder):
+                yield event
     except Exception as e:
         logger.error("Agent graph failed: %s", e, exc_info=True)
         raise
 
-    return {
+    final_state = state_holder.get("state", {})
+    yield {"type": "result", "data": {
         "final_report": final_state.get("final_report", ""),
         "citations": final_state.get("citations", []),
         "sql_results": final_state.get("sql_results", []) or None,
@@ -174,4 +194,15 @@ async def run_agent(
         "tokens_in": final_state.get("tokens_in", 0),
         "tokens_out": final_state.get("tokens_out", 0),
         "llm_calls": final_state.get("llm_calls", []),
-    }
+    }}
+
+
+async def _stream_graph(graph, initial_state, config, state_holder: dict) -> AsyncIterator[dict[str, Any]]:
+    # "values" carries the full state after each step (kept for the final result);
+    # "updates" carries just what the node that finished returned.
+    async for mode, chunk in graph.astream(initial_state, config=config, stream_mode=["updates", "values"]):
+        if mode == "values":
+            state_holder["state"] = chunk
+        else:
+            for node, update in chunk.items():
+                yield {"type": "node", "node": node, "update": update or {}}

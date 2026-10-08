@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -8,6 +9,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -216,35 +218,7 @@ async def chat(req: ChatRequest, request: Request):
             user_query=req.query,
             session_id=session_id,
         )
-        latency_ms = int((time.time() - start) * 1000)
-
-        # Log to audit table
-        if settings.database_url:
-            try:
-                from db.connection import get_connection
-                from db.queries import log_llm_calls, log_query
-                async with get_connection() as conn:
-                    await log_query(
-                        conn,
-                        session_id=session_id,
-                        user_query=req.query,
-                        route="multi",
-                        tools_called=result.get("tools_called", []),
-                        latency_ms=latency_ms,
-                        tokens_in=result.get("tokens_in", 0),
-                        tokens_out=result.get("tokens_out", 0),
-                        llm_provider=result.get("provider", "unknown"),
-                        retrieved_chunk_ids=[
-                            c.get("chunk_id")
-                            for c in result.get("citations", [])
-                            if c.get("chunk_id")
-                        ],
-                    )
-                    await log_llm_calls(conn, session_id=session_id, calls=result.get("llm_calls", []))
-                    await conn.commit()
-            except Exception as e:
-                logger.warning("Audit log failed: %s", e)
-
+        await _write_audit(req.query, session_id, result, int((time.time() - start) * 1000))
         return ChatResponse(
             answer=result["final_report"],
             citations=result.get("citations", []),
@@ -261,12 +235,120 @@ async def chat(req: ChatRequest, request: Request):
         # caller who could make the request fail.
         logger.error("Chat failed: %s", e, exc_info=True)
         return ChatResponse(
-            answer="I encountered an internal error while answering that. Please try again.",
+            answer=_INTERNAL_ERROR_ANSWER,
             citations=[],
             sql_results=None,
             session_id=session_id,
             provider="error",
         )
+
+
+_INTERNAL_ERROR_ANSWER = "I encountered an internal error while answering that. Please try again."
+
+
+async def _write_audit(query: str, session_id: str, result: dict, latency_ms: int) -> None:
+    if not settings.database_url:
+        return
+    try:
+        from db.connection import get_connection
+        from db.queries import log_llm_calls, log_query
+        async with get_connection() as conn:
+            await log_query(
+                conn,
+                session_id=session_id,
+                user_query=query,
+                route="multi",
+                tools_called=result.get("tools_called", []),
+                latency_ms=latency_ms,
+                tokens_in=result.get("tokens_in", 0),
+                tokens_out=result.get("tokens_out", 0),
+                llm_provider=result.get("provider", "unknown"),
+                retrieved_chunk_ids=[
+                    c.get("chunk_id")
+                    for c in result.get("citations", [])
+                    if c.get("chunk_id")
+                ],
+            )
+            await log_llm_calls(conn, session_id=session_id, calls=result.get("llm_calls", []))
+            await conn.commit()
+    except Exception as e:
+        logger.warning("Audit log failed: %s", e)
+
+
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
+
+
+def _describe_node(node: str, update: dict) -> str | None:
+    """One human-readable progress line per finished graph node (None = don't show)."""
+    if node == "planner":
+        tools = [step.get("tool", "?") for step in update.get("plan", [])]
+        return f"Planned: {', '.join(tools)}" if tools else "Planned: answer from context"
+    if node == "executor":
+        return "Gathered evidence"
+    if node == "critic":
+        return "Refining the answer" if update.get("_critic_verdict") == "RETRY" else "Checked the answer"
+    if node == "reporter":
+        return "Drafted the answer"
+    return None
+
+
+@app.post("/chat/stream")
+async def chat_stream(req: ChatRequest, request: Request):
+    """
+    Server-Sent Events variant of /chat. Emits `status` events as each agent node
+    finishes, then one `answer` event with the same payload /chat returns, then `done`.
+    The answer is not token-streamed: the critic can reject a draft and send the
+    graph back to the executor, so tokens from a draft may never be the final answer.
+    """
+    session_id = req.session_id or str(uuid.uuid4())
+
+    async def events():
+        global _query_counter
+        if _rate_limited(request):
+            yield _sse("answer", ChatResponse(
+                answer="Too many requests — please wait a minute and try again.",
+                citations=[], sql_results=None, session_id=session_id, provider="rate_limited",
+            ).model_dump())
+            yield _sse("done", {})
+            return
+
+        _query_counter += 1
+        start = time.time()
+        try:
+            from agent.graph import stream_agent
+            result: dict = {}
+            async for event in stream_agent(user_query=req.query, session_id=session_id):
+                if event["type"] == "result":
+                    result = event["data"]
+                    continue
+                message = _describe_node(event["node"], event["update"])
+                if message:
+                    yield _sse("status", {"node": event["node"], "message": message})
+
+            await _write_audit(req.query, session_id, result, int((time.time() - start) * 1000))
+            yield _sse("answer", ChatResponse(
+                answer=result.get("final_report") or "",
+                citations=result.get("citations", []),
+                sql_results=result.get("sql_results"),
+                session_id=session_id,
+                provider=result.get("provider", "unknown"),
+            ).model_dump())
+        except Exception as e:
+            logger.error("Chat stream failed: %s", e, exc_info=True)
+            yield _sse("answer", ChatResponse(
+                answer=_INTERNAL_ERROR_ANSWER, citations=[], sql_results=None,
+                session_id=session_id, provider="error",
+            ).model_dump())
+        yield _sse("done", {})
+
+    # X-Accel-Buffering stops reverse proxies (HF Spaces sits behind one) from
+    # holding the whole response until it completes, which would defeat streaming.
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/metrics")
