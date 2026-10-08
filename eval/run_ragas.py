@@ -115,6 +115,7 @@ NIM_ANSWER_MAX_RPM = 35
 GROQ_JUDGE_MAX_RPM = 20  # under Groq's 30 RPM free tier
 GROQ_JUDGE_MAX_RETRIES = 6
 JUDGE_MAX_WORKERS = 2
+JUDGE_MAX_TOKENS = 2048
 
 # answer_relevancy's embeddings. Gemini's OpenAI-compatible endpoint serves these;
 # unlike the 5 RPM chat tier that ruled Gemini out as the *judge*, the embeddings
@@ -337,7 +338,15 @@ async def run_evaluation(args: argparse.Namespace) -> dict:
         # Do NOT "fix" this by raising max_tokens instead: Groq counts requested
         # max_tokens against this model's 8000 TPM limit, so max_tokens=8192 turns
         # the 400 into a 413 rate_limit_exceeded on every call.
-        judge_llm = llm_factory(args.judge_model, client=groq_client, reasoning_effort="low")
+        #
+        # 2048 is the middle ground: RAGAS's default of 1024 truncates long
+        # faithfulness statement lists (IncompleteOutputException — 2 of 3 samples
+        # unscored on 2026-10-08), and with JUDGE_MAX_WORKERS=2 two in-flight
+        # requests stay well under 8000 TPM.
+        judge_llm = llm_factory(
+            args.judge_model, client=groq_client, reasoning_effort="low",
+            max_tokens=JUDGE_MAX_TOKENS,
+        )
 
         # Embeddings go to Gemini. Groq has no embeddings endpoint, and NVIDIA NIM
         # — which served this until 2026-09 — retired its entire embeddings catalogue:

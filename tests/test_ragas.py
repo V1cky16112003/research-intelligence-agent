@@ -255,6 +255,8 @@ def test_check_thresholds_passes_with_full_coverage():
 
 def test_judge_concurrency_is_bounded():
     """16 concurrent judge calls overran Groq's 8000 TPM and left samples unscored."""
-    from eval.run_ragas import GROQ_JUDGE_MAX_RETRIES, JUDGE_MAX_WORKERS
+    from eval.run_ragas import GROQ_JUDGE_MAX_RETRIES, JUDGE_MAX_TOKENS, JUDGE_MAX_WORKERS
     assert JUDGE_MAX_WORKERS <= 2
     assert GROQ_JUDGE_MAX_RETRIES >= 4
+    # 1024 truncated faithfulness output; 8192 trips the 8000 TPM cap per request
+    assert 1024 < JUDGE_MAX_TOKENS * JUDGE_MAX_WORKERS < 8000
