@@ -251,3 +251,10 @@ def test_check_thresholds_passes_with_full_coverage():
     metrics = {"faithfulness": 0.9, "answer_relevancy": 0.9, "context_precision": 0.9,
                "faithfulness_unscored": 0}
     assert check_thresholds(metrics) == []
+
+
+def test_judge_concurrency_is_bounded():
+    """16 concurrent judge calls overran Groq's 8000 TPM and left samples unscored."""
+    from eval.run_ragas import GROQ_JUDGE_MAX_RETRIES, JUDGE_MAX_WORKERS
+    assert JUDGE_MAX_WORKERS <= 2
+    assert GROQ_JUDGE_MAX_RETRIES >= 4

@@ -113,6 +113,8 @@ NIM_ANSWER_MAX_RPM = 35
 # Groq decommissioned llama-3.3-70b-versatile, so the judge moved down to the 20b
 # to preserve that separation rather than share one bucket.
 GROQ_JUDGE_MAX_RPM = 20  # under Groq's 30 RPM free tier
+GROQ_JUDGE_MAX_RETRIES = 6
+JUDGE_MAX_WORKERS = 2
 
 # answer_relevancy's embeddings. Gemini's OpenAI-compatible endpoint serves these;
 # unlike the 5 RPM chat tier that ruled Gemini out as the *judge*, the embeddings
@@ -314,7 +316,13 @@ async def run_evaluation(args: argparse.Namespace) -> dict:
         # quota per model — judging keeps its own independent budget instead of
         # competing with generation for the same 100K TPD.
         groq_judge_limiter = _SlidingWindowRateLimiter(GROQ_JUDGE_MAX_RPM, period_seconds=60.0)
-        groq_client = OpenAI(api_key=os.getenv("GROQ_API_KEY", ""), base_url="https://api.groq.com/openai/v1")
+        # max_retries: the SDK honours Groq's retry-after on 429. Its default of 2
+        # gave up inside one TPM window and left a sample unscored (2026-10-08).
+        groq_client = OpenAI(
+            api_key=os.getenv("GROQ_API_KEY", ""),
+            base_url="https://api.groq.com/openai/v1",
+            max_retries=GROQ_JUDGE_MAX_RETRIES,
+        )
         _rate_limit_method(groq_client.chat.completions, "create", groq_judge_limiter)
         # reasoning_effort="low" is load-bearing, not a tuning knob. gpt-oss emits
         # hidden reasoning before content, and under RAGAS's json_schema structured
@@ -359,11 +367,17 @@ async def run_evaluation(args: argparse.Namespace) -> dict:
         _rate_limit_method(gemini_embeddings.client, "create", gemini_embed_limiter)
         judge_embeddings = LangchainEmbeddingsWrapper(gemini_embeddings)
 
+        from ragas.run_config import RunConfig
+
         result = ragas_evaluate(
             dataset=dataset,
             metrics=[faithfulness, answer_relevancy, context_precision],
             llm=judge_llm,
             embeddings=judge_embeddings,
+            # RAGAS defaults to 16 concurrent jobs. The RPM limiter above caps
+            # requests, not tokens, and 16 parallel ~1-3k-token judge calls
+            # overrun Groq's 8000 TPM in seconds regardless of RPM.
+            run_config=RunConfig(max_workers=JUDGE_MAX_WORKERS),
         )
 
         metrics = {
