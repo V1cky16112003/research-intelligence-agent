@@ -1,0 +1,50 @@
+name: Scheduled checks
+
+# Free-tier upkeep. GitHub disables scheduled workflows after 60 days without a
+# commit; re-enable from the Actions tab if that happens.
+on:
+  schedule:
+    - cron: "17 */6 * * *"   # keep-warm + readiness, every 6h
+    - cron: "41 7 * * *"     # model probe, daily
+  workflow_dispatch:
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  keep-warm:
+    name: Keep HF Space warm + readiness
+    runs-on: ubuntu-latest
+    if: github.event.schedule != '41 7 * * *'
+    steps:
+      - name: Ping /ready
+        run: |
+          HF_URL="${{ secrets.HF_SPACE_URL }}"
+          if [ -z "$HF_URL" ]; then echo "HF_SPACE_URL not set"; exit 0; fi
+          # A sleeping Space takes a while to boot; retry before declaring it down.
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o body.json -w '%{http_code}' --max-time 60 "$HF_URL/ready" || true)
+            echo "attempt $i: HTTP $code $(cat body.json 2>/dev/null)"
+            [ "$code" = "200" ] && exit 0
+            sleep 30
+          done
+          echo "::error::$HF_URL/ready did not return 200"
+          exit 1
+
+  model-probe:
+    name: Probe pinned LLM models
+    runs-on: ubuntu-latest
+    if: github.event.schedule != '17 */6 * * *'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install "openai>=2.26.0"
+      - name: Probe
+        # Imports only agent.gateway (openai + stdlib), so the full requirements aren't needed.
+        run: python -m scripts.probe_models
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          NVIDIA_NIM_API_KEY: ${{ secrets.NVIDIA_NIM_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

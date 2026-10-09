@@ -16,7 +16,11 @@ demo offline. Everything below is sized against that, not against data exfiltrat
 
 | Issue | Mitigation |
 |---|---|
-| Unbounded fan-out from anonymous callers | Fixed-window rate limit, `CHAT_RATE_LIMIT_PER_MINUTE` (default 20). Set to `0` to disable. |
+| Unbounded fan-out from anonymous callers | Fixed-window rate limit, `CHAT_RATE_LIMIT_PER_MINUTE` (default 20), returning `429` + `Retry-After`. Counted in Redis (`rl:chat:<ip>`, one Upstash pipeline call) so it survives redeploys and is shared across replicas; falls back to the in-process window if Redis is down. Set to `0` to disable. |
+| Concurrent runs exceeding Groq's free 8000 TPM | Admission control, `MAX_CONCURRENT_CHATS` (default 4). Excess requests get `503` + `Retry-After: 15` immediately instead of queueing on provider 429s. Slots are released on completion, error, or client disconnect. |
+| Runaway or injected output size | Answers capped at `MAX_ANSWER_CHARS` (default 20,000) with a visible truncation marker. |
+| Frontend XSS / clickjacking | `frontend/vercel.json` sets CSP (`script-src 'self'`, `connect-src` limited to `*.hf.space`), `frame-ancestors 'none'`, HSTS, `nosniff`. Model markdown is rendered by `react-markdown`, which does not render raw HTML. |
+| Vulnerable dependencies | `dependency-audit` CI job: `pip-audit` (known, unfixable findings ignored by ID with reasons in `ci.yml`) and `npm audit --audit-level=high`. |
 | `Access-Control-Allow-Origin: *` | `ALLOWED_ORIGINS` allowlist. Defaults to the production frontend (`https://frontend-vert-eight-61.vercel.app`) and `http://localhost:5173`; set `ALLOWED_ORIGINS` to override. |
 | Unbounded prompt size inflating token spend | `ChatRequest.query` capped at 4,000 chars, `session_id` at 200. |
 | Internal topology leaked in errors | `/chat` returns a generic message; the detail goes to the log. Previously it returned `str(e)`, and psycopg connection errors embed host/database/user while provider SDK errors embed request URLs. |
@@ -31,12 +35,12 @@ which ships no credential. The rate limiter is a brake, not an access control. I
 ever holds anything non-public, this is the first thing to fix — an API key checked in
 a dependency, with the key added to the frontend's build env.
 
-**The rate limiter is in-process.** It resets on redeploy and does not coordinate
-across replicas. `X-Forwarded-For` is client-controlled and trivially spoofed, and on
-Hugging Face Spaces the socket peer is the proxy, so there is no trustworthy client
-identity available at this layer. Accepted because the goal is stopping a naive script,
-not a determined attacker. Upstash Redis is already a dependency if this needs to
-become real.
+**The rate limiter keys on `X-Forwarded-For`.** It is client-controlled and trivially
+spoofed, and on Hugging Face Spaces the socket peer is the proxy, so there is no
+trustworthy client identity at this layer. A spoofer can dodge the per-IP limit, but
+not `MAX_CONCURRENT_CHATS`, which is global — so the worst case is a busy demo, not
+an unbounded quota burn. Real per-user identity needs a login (Supabase Auth and
+Clerk both have free tiers); not done because the demo is intentionally public.
 
 **Prompt injection via `web_search_tool`.** DuckDuckGo snippets are attacker-writable
 text that flows untreated into `_build_context` and then into the reporter prompt. A

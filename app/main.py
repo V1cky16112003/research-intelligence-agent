@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
+import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from starlette.background import BackgroundTask
 
 logger = logging.getLogger(__name__)
 START_TIME = time.time()
@@ -47,6 +50,16 @@ class Settings(BaseSettings):
     # personal API keys, so an open endpoint is a direct quota-drain amplifier.
     # Generous enough that no human user notices; low enough to stop a script.
     chat_rate_limit_per_minute: int = 20
+    # Agent runs admitted at once. Groq's free tier caps at 8000 TPM and one run
+    # makes six-to-ten LLM calls, so past ~4 concurrent runs every extra request
+    # just queues on 429s inside the gateway (p50 hit 250s at 8-way). Shedding
+    # with a 503 + Retry-After is faster for everyone than admitting it.
+    max_concurrent_chats: int = 4
+    # Hard cap on the answer returned to the client — a runaway generation (or a
+    # prompt-injected one) should not ship megabytes to the browser.
+    max_answer_chars: int = 20_000
+    # "json" for one JSON object per log line (what log search wants), "text" for local dev.
+    log_format: str = "json"
 
     def get_allowed_origins(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()] or ["*"]
@@ -65,9 +78,52 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
+# Set per request by the middleware below and stamped onto every log record, so one
+# /chat run's planner, executor and gateway lines can be pulled out of the stream.
+request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="-")
+
+
+class _RequestIdFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = request_id_var.get()
+        return True
+
+
+class _JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        entry = {
+            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
+            "level": record.levelname,
+            "logger": record.name,
+            "request_id": getattr(record, "request_id", "-"),
+            "msg": record.getMessage(),
+        }
+        if record.exc_info:
+            entry["exc"] = self.formatException(record.exc_info)
+        return json.dumps(entry, default=str)
+
+
+def configure_logging() -> None:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.addFilter(_RequestIdFilter())
+    if settings.log_format == "json":
+        handler.setFormatter(_JsonFormatter())
+    else:
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s"))
+    root = logging.getLogger()
+    root.handlers = [handler]
+    root.setLevel(logging.INFO)
+
+
+# Shared with the gateway's response cache; None when Redis is unconfigured.
+_redis = None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _redis
+    configure_logging()
+
     # DB pool
     if settings.database_url:
         from db.connection import apply_schema, get_connection, init_pool
@@ -83,6 +139,7 @@ async def lifespan(app: FastAPI):
     # Redis
     from agent.redis_client import create_redis_client
     redis_client = await create_redis_client(settings.get_redis_url() or None)
+    _redis = redis_client
 
     # LLM gateway
     from agent.gateway import LLMGateway
@@ -141,12 +198,30 @@ app.add_middleware(
     allow_origins=settings.get_allowed_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID", "Retry-After"],
 )
 
 
-# Fixed-window per-client counter. In-process, so it resets on redeploy and does not
-# coordinate across replicas — it is a quota-drain brake, not an access control. The
-# endpoint still has no authentication; see docs/security.md.
+@app.middleware("http")
+async def request_context(request: Request, call_next):
+    # Honour a caller-supplied ID (bounded) so a frontend error report can be matched
+    # to backend logs; otherwise mint one.
+    rid = (request.headers.get("x-request-id") or "")[:64] or uuid.uuid4().hex[:16]
+    token = request_id_var.set(rid)
+    try:
+        response = await call_next(request)
+    finally:
+        request_id_var.reset(token)
+    response.headers["X-Request-ID"] = rid
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+# Fixed-window per-client counter. Lives in Redis when it is configured, so the window
+# survives redeploys and is shared across replicas; falls back to this in-process dict
+# when Redis is absent or erroring (fail-open to the local brake, never to no brake).
+# It is a quota-drain brake, not an access control; see docs/security.md.
 _rate_window: dict[str, tuple[int, float]] = {}
 
 
@@ -160,11 +235,21 @@ def _client_key(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def _rate_limited(request: Request) -> bool:
+async def _rate_limited(request: Request) -> bool:
     limit = settings.chat_rate_limit_per_minute
     if limit <= 0:
         return False
     key = _client_key(request)
+    if _redis is not None:
+        try:
+            count = await _redis.incr_window(f"rl:chat:{key}", 60)
+            return count > limit
+        except Exception as e:
+            logger.warning("Redis rate limit unavailable, using in-process window: %s", e)
+    return _rate_limited_local(key, limit)
+
+
+def _rate_limited_local(key: str, limit: int) -> bool:
     now = time.time()
     count, window_start = _rate_window.get(key, (0, now))
     if now - window_start >= 60:
@@ -176,6 +261,43 @@ def _rate_limited(request: Request) -> bool:
             if now - started >= 60:
                 _rate_window.pop(stale, None)
     return count > limit
+
+
+# Admission control for agent runs; see Settings.max_concurrent_chats.
+_active_chats = 0
+
+
+def _try_admit() -> bool:
+    # No await between check and increment, so this is atomic on the event loop.
+    global _active_chats
+    if settings.max_concurrent_chats > 0 and _active_chats >= settings.max_concurrent_chats:
+        return False
+    _active_chats += 1
+    return True
+
+
+def _release() -> None:
+    global _active_chats
+    _active_chats = max(0, _active_chats - 1)
+
+
+def _rejection(request_rate_limited: bool) -> JSONResponse:
+    if request_rate_limited:
+        return JSONResponse(
+            status_code=429, headers={"Retry-After": "60"},
+            content={"detail": "Too many requests — please wait a minute and try again."},
+        )
+    return JSONResponse(
+        status_code=503, headers={"Retry-After": "15"},
+        content={"detail": "The agent is busy with other questions — please retry in a few seconds."},
+    )
+
+
+def _cap_answer(answer: str) -> str:
+    limit = settings.max_answer_chars
+    if len(answer) <= limit:
+        return answer
+    return answer[:limit] + "\n\n*[Answer truncated.]*"
 
 
 class ChatRequest(BaseModel):
@@ -195,7 +317,39 @@ class ChatResponse(BaseModel):
 
 @app.get("/health")
 async def health():
+    """Liveness: the process is up. Cheap, touches nothing external — keep-alive pings hit this."""
     return {"status": "ok", "version": "1.0.0"}
+
+
+@app.get("/ready")
+async def ready():
+    """Readiness: dependencies answer. 503 when the database is down, since no
+    query can be served without it; Redis is reported but only degrades (cache and
+    shared rate limit fall back), so it does not fail the probe."""
+    checks: dict[str, str] = {}
+    healthy = True
+    if settings.database_url:
+        try:
+            from db.connection import get_connection
+            async with get_connection() as conn:
+                await asyncio.wait_for(conn.execute("SELECT 1"), timeout=5)
+            checks["database"] = "ok"
+        except Exception as e:
+            logger.warning("Readiness: database check failed: %s", e)
+            checks["database"] = "error"
+            healthy = False
+    else:
+        checks["database"] = "disabled"
+    if _redis is not None:
+        try:
+            checks["redis"] = "ok" if await asyncio.wait_for(_redis.ping(), timeout=3) else "error"
+        except Exception as e:
+            logger.warning("Readiness: redis check failed: %s", e)
+            checks["redis"] = "error"
+    else:
+        checks["redis"] = "disabled"
+    checks["active_chats"] = str(_active_chats)
+    return JSONResponse(status_code=200 if healthy else 503, content={"ready": healthy, "checks": checks})
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -203,11 +357,10 @@ async def chat(req: ChatRequest, request: Request):
     global _query_counter
     session_id = req.session_id or str(uuid.uuid4())
 
-    if _rate_limited(request):
-        return ChatResponse(
-            answer="Too many requests — please wait a minute and try again.",
-            citations=[], sql_results=None, session_id=session_id, provider="rate_limited",
-        )
+    if await _rate_limited(request):
+        return _rejection(request_rate_limited=True)
+    if not _try_admit():
+        return _rejection(request_rate_limited=False)
 
     _query_counter += 1
     start = time.time()
@@ -220,7 +373,7 @@ async def chat(req: ChatRequest, request: Request):
         )
         await _write_audit(req.query, session_id, result, int((time.time() - start) * 1000))
         return ChatResponse(
-            answer=result["final_report"],
+            answer=_cap_answer(result["final_report"]),
             citations=result.get("citations", []),
             sql_results=result.get("sql_results"),
             session_id=session_id,
@@ -241,6 +394,8 @@ async def chat(req: ChatRequest, request: Request):
             session_id=session_id,
             provider="error",
         )
+    finally:
+        _release()
 
 
 _INTERNAL_ERROR_ANSWER = "I encountered an internal error while answering that. Please try again."
@@ -303,16 +458,25 @@ async def chat_stream(req: ChatRequest, request: Request):
     """
     session_id = req.session_id or str(uuid.uuid4())
 
+    # Rejections happen before the stream opens so the client sees a real 429/503
+    # rather than a 200 whose body happens to say "too many requests".
+    if await _rate_limited(request):
+        return _rejection(request_rate_limited=True)
+    if not _try_admit():
+        return _rejection(request_rate_limited=False)
+    rid = request_id_var.get()
+    released = False
+
+    def release_once() -> None:
+        nonlocal released
+        if not released:
+            released = True
+            _release()
+
     async def events():
         global _query_counter
-        if _rate_limited(request):
-            yield _sse("answer", ChatResponse(
-                answer="Too many requests — please wait a minute and try again.",
-                citations=[], sql_results=None, session_id=session_id, provider="rate_limited",
-            ).model_dump())
-            yield _sse("done", {})
-            return
-
+        # The generator runs after the middleware has returned, so restore the ID.
+        request_id_var.set(rid)
         _query_counter += 1
         start = time.time()
         try:
@@ -328,7 +492,7 @@ async def chat_stream(req: ChatRequest, request: Request):
 
             await _write_audit(req.query, session_id, result, int((time.time() - start) * 1000))
             yield _sse("answer", ChatResponse(
-                answer=result.get("final_report") or "",
+                answer=_cap_answer(result.get("final_report") or ""),
                 citations=result.get("citations", []),
                 sql_results=result.get("sql_results"),
                 session_id=session_id,
@@ -340,6 +504,10 @@ async def chat_stream(req: ChatRequest, request: Request):
                 answer=_INTERNAL_ERROR_ANSWER, citations=[], sql_results=None,
                 session_id=session_id, provider="error",
             ).model_dump())
+        finally:
+            # Also runs when the client disconnects mid-stream (GeneratorExit), so
+            # a cancelled request frees its slot.
+            release_once()
         yield _sse("done", {})
 
     # X-Accel-Buffering stops reverse proxies (HF Spaces sits behind one) from
@@ -348,6 +516,9 @@ async def chat_stream(req: ChatRequest, request: Request):
         events(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        # Backstop for a client that disconnects before the generator ever starts,
+        # in which case its finally block never runs.
+        background=BackgroundTask(release_once),
     )
 
 

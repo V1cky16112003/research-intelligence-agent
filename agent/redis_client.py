@@ -25,6 +25,13 @@ class RedisClient:
     async def delete(self, key: str) -> None:
         raise NotImplementedError
 
+    async def incr_window(self, key: str, ttl: int) -> int:
+        """Increment a counter, starting its TTL on first increment. Returns the new count."""
+        raise NotImplementedError
+
+    async def ping(self) -> bool:
+        raise NotImplementedError
+
 
 class UpstashRedisClient(RedisClient):
     """Upstash serverless Redis via HTTP REST API."""
@@ -60,6 +67,27 @@ class UpstashRedisClient(RedisClient):
             r = await c.get(f"{self._base_url}/del/{key}", headers=self._headers)
             r.raise_for_status()
 
+    async def incr_window(self, key: str, ttl: int) -> int:
+        # One round trip via the pipeline endpoint. EXPIRE ... NX only sets the TTL
+        # when the key has none, so the window starts at the first hit and is not
+        # pushed forward by later ones.
+        import httpx
+        async with httpx.AsyncClient(timeout=2.0) as c:
+            r = await c.post(
+                f"{self._base_url}/pipeline",
+                json=[["INCR", key], ["EXPIRE", key, str(ttl), "NX"]],
+                headers=self._headers,
+            )
+            r.raise_for_status()
+            return int(r.json()[0]["result"])
+
+    async def ping(self) -> bool:
+        import httpx
+        async with httpx.AsyncClient(timeout=2.0) as c:
+            r = await c.get(f"{self._base_url}/ping", headers=self._headers)
+            r.raise_for_status()
+            return r.json().get("result") == "PONG"
+
 
 class LocalRedisClient(RedisClient):
     """redis-py async client for local/TCP Redis (docker-compose)."""
@@ -76,6 +104,16 @@ class LocalRedisClient(RedisClient):
 
     async def delete(self, key: str) -> None:
         await self._redis.delete(key)
+
+    async def incr_window(self, key: str, ttl: int) -> int:
+        async with self._redis.pipeline(transaction=True) as pipe:
+            pipe.incr(key)
+            pipe.expire(key, ttl, nx=True)
+            count, _ = await pipe.execute()
+        return int(count)
+
+    async def ping(self) -> bool:
+        return bool(await self._redis.ping())
 
 
 async def create_redis_client(redis_url: str | None) -> Optional[RedisClient]:

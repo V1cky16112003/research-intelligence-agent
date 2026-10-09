@@ -4,6 +4,44 @@ import remarkGfm from 'remark-gfm'
 import './markdown.css'
 
 const API_URL = import.meta.env.VITE_API_URL || ''
+const HISTORY_KEY = 'research-agent-history-v1'
+const HISTORY_LIMIT = 50
+
+function loadHistory() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(HISTORY_KEY) || 'null')
+    return saved && Array.isArray(saved.messages) ? saved : { messages: [], sessionId: null }
+  } catch {
+    return { messages: [], sessionId: null }
+  }
+}
+
+// 429 / 503 carry a JSON {detail} from the API; anything else is a generic failure.
+async function describeHttpError(res) {
+  try {
+    const body = await res.json()
+    if (body?.detail && typeof body.detail === 'string') return body.detail
+  } catch { /* not JSON */ }
+  return `The API returned HTTP ${res.status}. It may be waking up — please try again in a moment.`
+}
+
+function CopyButton({ text }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      style={styles.copyBtn}
+      aria-label="Copy answer"
+      onClick={() => {
+        navigator.clipboard?.writeText(text).then(() => {
+          setCopied(true)
+          setTimeout(() => setCopied(false), 1500)
+        })
+      }}
+    >
+      {copied ? 'Copied' : 'Copy'}
+    </button>
+  )
+}
 
 // --- Styles (inline for simplicity, no CSS file needed) ---
 const styles = {
@@ -25,6 +63,8 @@ const styles = {
   input: { flex: 1, background: '#1a1a1a', border: '1px solid #2a2a2a', borderRadius: '12px', padding: '12px 16px', color: '#e8e8e8', fontSize: '15px', outline: 'none', resize: 'none' },
   sendBtn: { background: '#1e3a5f', border: 'none', borderRadius: '12px', padding: '0 20px', color: '#fff', fontSize: '20px', cursor: 'pointer', transition: 'background 0.2s' },
   sendBtnDisabled: { background: '#1a1a1a', cursor: 'not-allowed', color: '#444' },
+  copyBtn: { background: 'transparent', border: '1px solid #2a2a2a', borderRadius: '6px', padding: '2px 8px', color: '#777', fontSize: '11px', cursor: 'pointer' },
+  clearBtn: { float: 'right', background: 'transparent', border: '1px solid #2a2a2a', borderRadius: '8px', padding: '4px 10px', color: '#888', fontSize: '12px', cursor: 'pointer' },
   exampleBtn: { background: 'transparent', border: '1px solid #2a2a2a', borderRadius: '20px', padding: '6px 14px', color: '#666', fontSize: '13px', cursor: 'pointer', transition: 'all 0.2s' },
 }
 
@@ -120,14 +160,28 @@ async function readSSE(res, onEvent) {
 }
 
 export default function App() {
-  const [messages, setMessages] = useState([])
+  const [initial] = useState(loadHistory)
+  const [messages, setMessages] = useState(initial.messages)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
-  const [sessionId, setSessionId] = useState(null)
+  const [sessionId, setSessionId] = useState(initial.sessionId)
   const [slowStart, setSlowStart] = useState(false)
   const [steps, setSteps] = useState([])
   const bottomRef = useRef(null)
   const inputRef = useRef(null)
+  const abortRef = useRef(null)
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify({ messages: messages.slice(-HISTORY_LIMIT), sessionId }))
+    } catch { /* storage full or disabled — history is best-effort */ }
+  }, [messages, sessionId])
+
+  function clearChat() {
+    abortRef.current?.abort()
+    setMessages([])
+    setSessionId(null)
+  }
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -144,8 +198,12 @@ export default function App() {
     // Show cold-start warning after 3s
     const slowTimer = setTimeout(() => setSlowStart(true), 3000)
 
+    const controller = new AbortController()
+    abortRef.current = controller
+
     try {
       const res = await fetch(`${API_URL}/chat/stream`, {
+        signal: controller.signal,
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
         body: JSON.stringify({ query, session_id: sessionId }),
@@ -153,7 +211,14 @@ export default function App() {
       clearTimeout(slowTimer)
       setSlowStart(false)
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      if (!res.ok) {
+        const detail = await describeHttpError(res)
+        setMessages(prev => [...prev, {
+          role: 'assistant', content: detail,
+          citations: [], sqlResults: null, provider: 'error',
+        }])
+        return
+      }
 
       let answered = false
       await readSSE(res, (event, data) => {
@@ -175,14 +240,18 @@ export default function App() {
     } catch (err) {
       clearTimeout(slowTimer)
       setSlowStart(false)
+      const stopped = err.name === 'AbortError'
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: `Error: ${err.message}. The API may be waking up — please try again in a moment.`,
+        content: stopped
+          ? '*Stopped.*'
+          : `Error: ${err.message}. The API may be waking up — please try again in a moment.`,
         citations: [],
         sqlResults: null,
         provider: 'error',
       }])
     } finally {
+      abortRef.current = null
       setLoading(false)
       setSteps([])
       setTimeout(() => inputRef.current?.focus(), 100)
@@ -202,11 +271,14 @@ export default function App() {
         <div style={styles.title}>
           Research Intelligence Agent
           <span style={styles.providerBadge}>LangGraph + pgvector</span>
+          {messages.length > 0 && (
+            <button style={styles.clearBtn} onClick={clearChat} aria-label="Start a new chat">New chat</button>
+          )}
         </div>
         <div style={styles.subtitle}>Ask about 50k ArXiv ML papers (2007–2018) — semantic search, SQL analytics, co-author graph</div>
       </div>
 
-      <div style={styles.messages}>
+      <div style={styles.messages} role="log" aria-live="polite">
         {messages.length === 0 && (
           <div style={{ padding: '40px 0', textAlign: 'center' }}>
             <div style={{ color: '#444', marginBottom: '20px', fontSize: '15px' }}>Try an example:</div>
@@ -237,9 +309,12 @@ export default function App() {
               <>
                 <Citations citations={msg.citations} />
                 <SqlResults results={msg.sqlResults} />
-                {msg.provider && msg.provider !== 'stub' && msg.provider !== 'error' && (
-                  <div style={{ marginTop: '8px', fontSize: '11px', color: '#444' }}>via {msg.provider}</div>
-                )}
+                <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  {msg.provider && msg.provider !== 'stub' && msg.provider !== 'error' && (
+                    <span style={{ fontSize: '11px', color: '#666' }}>via {msg.provider}</span>
+                  )}
+                  {msg.provider !== 'error' && msg.content && <CopyButton text={msg.content} />}
+                </div>
               </>
             )}
           </div>
@@ -264,14 +339,21 @@ export default function App() {
           placeholder="Ask about ML papers... (Enter to send, Shift+Enter for newline)"
           rows={1}
           disabled={loading}
+          aria-label="Your question"
+          maxLength={4000}
         />
-        <button
-          style={loading || !input.trim() ? { ...styles.sendBtn, ...styles.sendBtnDisabled } : styles.sendBtn}
-          onClick={() => sendMessage(input)}
-          disabled={loading || !input.trim()}
-        >
-          ↑
-        </button>
+        {loading ? (
+          <button style={styles.sendBtn} onClick={() => abortRef.current?.abort()} aria-label="Stop generating">■</button>
+        ) : (
+          <button
+            style={!input.trim() ? { ...styles.sendBtn, ...styles.sendBtnDisabled } : styles.sendBtn}
+            onClick={() => sendMessage(input)}
+            disabled={!input.trim()}
+            aria-label="Send"
+          >
+            ↑
+          </button>
+        )}
       </div>
     </div>
   )

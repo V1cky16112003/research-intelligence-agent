@@ -6,7 +6,7 @@ pydantic-settings>=2.3.0
 
 # Agent framework — exact pins to avoid breaking changes
 langgraph==1.2.6
-langgraph-checkpoint-postgres==3.1.0
+langgraph-checkpoint-postgres==3.1.1
 langchain-core==1.4.8
 langchain-community>=0.4.0
 openai>=2.26.0
