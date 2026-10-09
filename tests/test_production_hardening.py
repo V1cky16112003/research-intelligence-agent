@@ -108,7 +108,7 @@ def test_ready_reports_dependencies(monkeypatch):
     res = TestClient(main_module.app).get("/ready")
     # Redis down degrades but does not fail readiness; the DB is what's load-bearing.
     assert res.status_code == 200
-    assert res.json()["checks"] == {"database": "disabled", "redis": "error", "active_chats": "0"}
+    assert res.json()["checks"] == {"database": "disabled", "redis": "error: ConnectionError", "active_chats": "0"}
 
 
 def test_request_id_is_echoed_and_minted():

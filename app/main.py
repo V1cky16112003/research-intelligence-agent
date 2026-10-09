@@ -406,7 +406,10 @@ async def ready():
             checks["redis"] = "ok" if await asyncio.wait_for(_redis.ping(), timeout=3) else "error"
         except Exception as e:
             logger.warning("Readiness: redis check failed: %s", e)
-            checks["redis"] = "error"
+            # Class name and HTTP status only — enough to tell a timeout from a 401
+            # (stale credentials) without exposing hostnames or tokens.
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            checks["redis"] = f"error: {type(e).__name__}" + (f" {status}" if status else "")
     else:
         checks["redis"] = "disabled"
     checks["active_chats"] = str(_active_chats)
