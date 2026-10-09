@@ -11,6 +11,10 @@ langchain-core==1.4.8
 langchain-community>=0.4.0
 openai>=2.26.0
 
+# Tracing (export is opt-in via OTEL_EXPORTER_OTLP_ENDPOINT)
+opentelemetry-sdk>=1.30.0
+opentelemetry-exporter-otlp-proto-http>=1.30.0
+
 # HTTP
 httpx>=0.27.0
 

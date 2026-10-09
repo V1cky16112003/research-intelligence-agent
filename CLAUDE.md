@@ -68,7 +68,8 @@ Four-node state machine: **Planner → Executor → Critic → Reporter**
 - `graph.py` — wires the graph, `init_graph()` sets up `AsyncPostgresSaver` at startup, falls back to in-memory if no DB
 - `tools.py` — `TOOL_DISPATCH` dict mapping tool name → async function: `rag_retrieval`, `sql_analytics`, `web_search`, `graph_query`. `sql_analytics_tool` dispatches on `query_type` — one of `corpus_stats`, `papers_by_category`, `papers_by_year`, `papers_by_month`, `top_authors`, `query_volume`, `provider_latency`, `experiments`, `cost_by_node`, `retry_overhead` — plus a `_QUERY_TYPE_ALIASES` map that absorbs the planner's near-misses (`total_papers` → `corpus_stats`). Aggregate questions ("how many papers?") route to `corpus_stats`, which returns one row. `rag_retrieval_tool` runs hybrid search (vector + BM25 RRF, 16 candidates) then LLM reranks down to top 8. `graph_query_tool` answers relational questions (co-authorship, shared subfields) via fixed parameterized Cypher templates against Neo4j — never LLM-generated Cypher — and falls back to equivalent Postgres queries when Neo4j is unset, unreachable, or returns nothing (see Knowledge Graph below).
 - `gateway.py` — `LLMGateway`: Groq (`openai/gpt-oss-120b`) primary → NVIDIA NIM (`openai/gpt-oss-20b`) → Gemini 2.5 Flash, cascading fallback; wraps Upstash Redis cache. A 429 from any tier fails over *immediately* rather than serving the `[1s, 4s, 16s]` backoff — that backoff is reserved for 5xx. Groq's free tier caps at 8000 TPM, which a handful of concurrent `/chat` requests exceed; waiting it out cost ~21s per LLM call across the six-to-ten calls an agent run makes, and was the dominant term in an observed 486s p50 under 8-way concurrency. NIM's `meta/llama-3.1-70b-instruct` was retired 2026-08-26 and answers 410 Gone; a live probe of NIM's 82 advertised models found nearly all 404/410 on the free tier, leaving `openai/gpt-oss-20b` as the one servable chat model
-- `redis_client.py` — thin Upstash REST client (no persistent TCP connection)
+- `redis_client.py` — thin Upstash REST client (no persistent TCP connection); `incr_window` backs the API rate limiter via one `/pipeline` call (`INCR` + `EXPIRE NX`)
+- `tracing.py` — OpenTelemetry: `run_span` (root, one per run) + `traced_node` (wraps each node in `build_graph`). The root is carried in a ContextVar, not attached, because `stream_agent` is an async generator and attach/detach across a `yield` raises; LangGraph copies context into node tasks so parenting still holds (`tests/test_tracing.py` checks this through a real `StateGraph`). Export only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set
 
 The Critic node returns `RETRY` or `PASS`; the graph loops back to Executor up to `MAX_RETRIES = 3` times before forcing Reporter. Two short-circuits keep that loop from spending LLM time it cannot use: the critic PASSes without an LLM call when the context holds SQL or `aux_results` (a retry only re-runs `rag_retrieval`, which can't improve a structured answer), and the executor sets `_evidence_unchanged` when a retry's chunks are all duplicates, routing straight to END with the existing draft. Before this, warm SQL/graph questions took 85–112s live — three wasted reporter+critic round trips each.
 
@@ -144,11 +145,13 @@ Note: running `run_ragas.py` locally on Python 3.14 exits 1 *after* printing a p
 
 ### Tests (`tests/`)
 
-`conftest.py` stubs `psycopg`, `psycopg_pool`, `pgvector`, `torch`, and `sentence_transformers` so the full test suite runs locally without Docker. 158 tests, 0 skipped. `test_production_hardening.py` covers the Redis rate limiter and its fallback, admission control slot release, `/ready`, and request IDs. `PYTHONPATH=.` is required (set in CI env). `test_contextual_retrieval.py` covers embed prefix logic, reranker ordering/fallback, and BM25 query sanitization. `test_graph.py` covers the Neo4j driver singleton, graph sync idempotency, author-name tokenization, and the Neo4j → Postgres fallback paths. `test_gateway.py` covers the 3-tier Groq → NVIDIA NIM → Gemini fallback chain. `test_agent.py` covers `aux_results` routing and context rendering. `test_migration_runner.py` covers the migration SQL splitter (dollar-quoted bodies, string literals, statement ordering in 003).
+`conftest.py` stubs `psycopg`, `psycopg_pool`, `pgvector`, `torch`, and `sentence_transformers` so the full test suite runs locally without Docker. 162 tests, 0 skipped. `test_production_hardening.py` covers the Redis rate limiter and its fallback, admission control slot release, `/ready`, and request IDs. `PYTHONPATH=.` is required (set in CI env). `test_contextual_retrieval.py` covers embed prefix logic, reranker ordering/fallback, and BM25 query sanitization. `test_graph.py` covers the Neo4j driver singleton, graph sync idempotency, author-name tokenization, and the Neo4j → Postgres fallback paths. `test_gateway.py` covers the 3-tier Groq → NVIDIA NIM → Gemini fallback chain. `test_agent.py` covers `aux_results` routing and context rendering. `test_migration_runner.py` covers the migration SQL splitter (dollar-quoted bodies, string literals, statement ordering in 003).
 
 ### Frontend (`frontend/`)
 
 React 18 + Vite. `VITE_API_URL` env var points to the HF Space backend. Deployed to Vercel with root directory set to `frontend/`.
+
+Release, rollback, staging and observability runbook: `docs/operations.md`.
 
 ## Key Environment Variables
 
@@ -165,9 +168,10 @@ NEO4J_USER                # Neo4j AuraDB username
 NEO4J_PASSWORD            # Neo4j AuraDB password
 DAGSHUB_TOKEN             # MLflow tracking
 DAGSHUB_REPO              # username/reponame for MLflow
-HF_SPACE_URL              # GitHub secret for CI keep-alive ping
+HF_SPACE_URL              # GitHub secret for CI keep-alive ping + scheduled /ready poll
+OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_EXPORTER_OTLP_HEADERS  # optional trace export
 ```
 
 ## CI (`.github/workflows/`)
 
-`ci.yml` — four jobs: `lint-and-test` (ruff + pytest, no secrets needed), `dependency-audit` (`pip-audit` with ID-pinned, commented ignores for unfixable findings + `npm audit --audit-level=high` + frontend build), `ragas-quality-gate` (runs against live Neon DB, requires all secrets), `keep-alive` (pings `HF_SPACE_URL/health` on push to main). `scheduled.yml` — every 6h polls `HF_SPACE_URL/ready` (keeps the free Space from sleeping and alerts if it's down); daily runs `scripts/probe_models.py`, one real 16-token completion per pinned model, because providers retire free models silently and `/models` lists models that 410.
+`ci.yml` — five jobs: `lint-and-test` (ruff + pytest, no secrets needed), `dependency-audit` (`pip-audit` with ID-pinned, commented ignores for unfixable findings + `npm audit --audit-level=high` + frontend build), `frontend-e2e` (Playwright against the built UI with `/chat/stream` mocked via `page.route` — no secrets, no quota; desktop + mobile viewports), `ragas-quality-gate` (runs against live Neon DB, requires all secrets), `keep-alive` (pings `HF_SPACE_URL/health` on push to main). `scheduled.yml` — every 6h polls `HF_SPACE_URL/ready` (keeps the free Space from sleeping and alerts if it's down); daily runs `scripts/probe_models.py`, one real 16-token completion per pinned model, because providers retire free models silently and `/models` lists models that 410.

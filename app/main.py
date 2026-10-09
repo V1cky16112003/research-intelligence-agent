@@ -123,6 +123,8 @@ _redis = None
 async def lifespan(app: FastAPI):
     global _redis
     configure_logging()
+    from agent.tracing import init_tracing
+    init_tracing()
 
     # DB pool
     if settings.database_url:

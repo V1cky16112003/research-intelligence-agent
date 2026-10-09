@@ -20,6 +20,7 @@ from langgraph.graph import END, StateGraph
 
 from agent.nodes import MAX_RETRIES, critic_node, executor_node, planner_node, reporter_node
 from agent.state import AgentState
+from agent.tracing import run_span, traced_node
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +47,10 @@ def build_graph(checkpointer=None):
     """Build and compile the LangGraph research agent."""
     workflow = StateGraph(AgentState)
 
-    workflow.add_node("planner", planner_node)
-    workflow.add_node("executor", executor_node)
-    workflow.add_node("critic", critic_node)
-    workflow.add_node("reporter", reporter_node)
+    workflow.add_node("planner", traced_node("planner", planner_node))
+    workflow.add_node("executor", traced_node("executor", executor_node))
+    workflow.add_node("critic", traced_node("critic", critic_node))
+    workflow.add_node("reporter", traced_node("reporter", reporter_node))
 
     workflow.set_entry_point("planner")
     workflow.add_edge("planner", "executor")
@@ -125,7 +126,6 @@ async def stream_agent(
     Run the agent, yielding `{"type": "node", "node", "update"}` as each graph node
     finishes and a final `{"type": "result", "data"}` shaped like run_agent's return.
     """
-    global _checkpointer_schema_ready
     database_url = os.getenv("DATABASE_URL", "")
 
     # `retrieved_chunks`, `sql_results`, `citations`, and `previous_user_query` are
@@ -165,6 +165,29 @@ async def stream_agent(
     config = {"configurable": {"thread_id": session_id}}
     state_holder: dict[str, Any] = {}
 
+    with run_span(session_id, user_query) as span:
+        async for event in _run_graph(database_url, initial_state, config, state_holder):
+            yield event
+        final_state = state_holder.get("state", {})
+        span.set_attribute("agent.tools_called", final_state.get("tools_called", []))
+        span.set_attribute("llm.tokens_in", final_state.get("tokens_in", 0))
+        span.set_attribute("llm.tokens_out", final_state.get("tokens_out", 0))
+        span.set_attribute("agent.retry_count", final_state.get("retry_count", 0) or 0)
+
+    yield {"type": "result", "data": {
+        "final_report": final_state.get("final_report", ""),
+        "citations": final_state.get("citations", []),
+        "sql_results": final_state.get("sql_results", []) or None,
+        "tools_called": final_state.get("tools_called", []),
+        "provider": final_state.get("llm_provider", "unknown"),
+        "tokens_in": final_state.get("tokens_in", 0),
+        "tokens_out": final_state.get("tokens_out", 0),
+        "llm_calls": final_state.get("llm_calls", []),
+    }}
+
+
+async def _run_graph(database_url: str, initial_state, config, state_holder: dict) -> AsyncIterator[dict[str, Any]]:
+    global _checkpointer_schema_ready
     try:
         if database_url:
             from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -183,18 +206,6 @@ async def stream_agent(
     except Exception as e:
         logger.error("Agent graph failed: %s", e, exc_info=True)
         raise
-
-    final_state = state_holder.get("state", {})
-    yield {"type": "result", "data": {
-        "final_report": final_state.get("final_report", ""),
-        "citations": final_state.get("citations", []),
-        "sql_results": final_state.get("sql_results", []) or None,
-        "tools_called": final_state.get("tools_called", []),
-        "provider": final_state.get("llm_provider", "unknown"),
-        "tokens_in": final_state.get("tokens_in", 0),
-        "tokens_out": final_state.get("tokens_out", 0),
-        "llm_calls": final_state.get("llm_calls", []),
-    }}
 
 
 async def _stream_graph(graph, initial_state, config, state_holder: dict) -> AsyncIterator[dict[str, Any]]:
