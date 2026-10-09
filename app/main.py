@@ -73,13 +73,20 @@ class Settings(BaseSettings):
 
     def get_redis_url(self) -> str:
         """Return a single Redis URL, combining Upstash vars if needed."""
-        if self.redis_url:
-            return self.redis_url
-        if self.upstash_redis_rest_url and self.upstash_redis_rest_token:
+        # Values pasted into a secrets UI often keep the quotes from a .env line;
+        # a quoted URL parses with no host and every request fails with ConnectError.
+        def clean(v: str) -> str:
+            return v.strip().strip('"').strip("'").strip()
+
+        if clean(self.redis_url):
+            return clean(self.redis_url)
+        rest_url, token = clean(self.upstash_redis_rest_url), clean(self.upstash_redis_rest_token)
+        if rest_url and token:
             # Build https://default:{token}@{host} from Upstash's two-var format
             from urllib.parse import urlparse
-            parsed = urlparse(self.upstash_redis_rest_url)
-            return f"https://default:{self.upstash_redis_rest_token}@{parsed.netloc}"
+            if "://" not in rest_url:
+                rest_url = f"https://{rest_url}"
+            return f"https://default:{token}@{urlparse(rest_url).netloc}"
         return ""
 
 

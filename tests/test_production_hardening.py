@@ -122,3 +122,10 @@ def test_json_log_line_carries_request_id():
     record.request_id = "rid-1"
     line = json.loads(main_module._JsonFormatter().format(record))
     assert line["msg"] == "hello world" and line["request_id"] == "rid-1"
+
+
+def test_redis_url_tolerates_quoted_or_schemeless_secrets():
+    from app.main import Settings
+    for url in ['"https://h.upstash.io"', "'https://h.upstash.io'", " h.upstash.io\n"]:
+        s = Settings(_env_file=None, redis_url="", upstash_redis_rest_url=url, upstash_redis_rest_token='"tok"')
+        assert s.get_redis_url() == "https://default:tok@h.upstash.io"
