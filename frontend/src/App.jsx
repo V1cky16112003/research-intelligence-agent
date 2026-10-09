@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import './markdown.css'
+import { authHeader } from './auth.js'
 
 const API_URL = import.meta.env.VITE_API_URL || ''
 const HISTORY_KEY = 'research-agent-history-v1'
@@ -159,7 +160,7 @@ async function readSSE(res, onEvent) {
   }
 }
 
-export default function App() {
+export default function App({ user, signOut }) {
   const [initial] = useState(loadHistory)
   const [messages, setMessages] = useState(initial.messages)
   const [input, setInput] = useState('')
@@ -205,7 +206,7 @@ export default function App() {
       const res = await fetch(`${API_URL}/chat/stream`, {
         signal: controller.signal,
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...(await authHeader()) },
         body: JSON.stringify({ query, session_id: sessionId }),
       })
       clearTimeout(slowTimer)
@@ -271,8 +272,11 @@ export default function App() {
         <div style={styles.title}>
           Research Intelligence Agent
           <span style={styles.providerBadge}>LangGraph + pgvector</span>
+          {signOut && (
+            <button style={styles.clearBtn} onClick={() => { clearChat(); signOut() }} aria-label="Sign out" title={user?.email || ''}>Sign out</button>
+          )}
           {messages.length > 0 && (
-            <button style={styles.clearBtn} onClick={clearChat} aria-label="Start a new chat">New chat</button>
+            <button style={{ ...styles.clearBtn, marginRight: '8px' }} onClick={clearChat} aria-label="Start a new chat">New chat</button>
           )}
         </div>
         <div style={styles.subtitle}>Ask about 50k ArXiv ML papers (2007–2018) — semantic search, SQL analytics, co-author graph</div>

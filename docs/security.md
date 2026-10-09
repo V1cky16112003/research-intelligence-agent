@@ -35,12 +35,24 @@ which ships no credential. The rate limiter is a brake, not an access control. I
 ever holds anything non-public, this is the first thing to fix — an API key checked in
 a dependency, with the key added to the frontend's build env.
 
-**The rate limiter keys on `X-Forwarded-For`.** It is client-controlled and trivially
-spoofed, and on Hugging Face Spaces the socket peer is the proxy, so there is no
-trustworthy client identity at this layer. A spoofer can dodge the per-IP limit, but
-not `MAX_CONCURRENT_CHATS`, which is global — so the worst case is a busy demo, not
-an unbounded quota burn. Real per-user identity needs a login (Supabase Auth and
-Clerk both have free tiers); not done because the demo is intentionally public.
+## Authentication (Supabase)
+
+With `SUPABASE_URL` set, `/chat` and `/chat/stream` require `Authorization: Bearer
+<supabase access token>`, verified locally in `app/auth.py` (JWKS for asymmetric
+projects, `SUPABASE_JWT_SECRET` for legacy HS256): signature, `exp`, `aud=authenticated`
+and `iss`. `alg: none` and anonymous sessions (`is_anonymous`) are rejected — anonymous
+sign-ins would let anyone mint unlimited identities. Once a user is verified:
+
+- the rate limit keys on the user ID, not the spoofable `X-Forwarded-For`;
+- `USER_DAILY_QUERY_LIMIT` (default 100) caps each user's agent runs per 24h — the
+  per-user token budget;
+- `session_id` (the LangGraph checkpoint thread, i.e. stored conversation history) is
+  namespaced `<user_id>:<uuid>`. A client-supplied ID with another user's prefix is
+  replaced by a fresh one, so knowing someone's session ID does not expose their history.
+
+Unset `SUPABASE_URL` and the API is open again, with the IP limit as the only brake
+(the spoofable-XFF caveat then applies). `/health`, `/ready`, `/metrics` and
+`/analytics/cost` stay public; the analytics endpoint holds only aggregates.
 
 **Prompt injection via `web_search_tool`.** DuckDuckGo snippets are attacker-writable
 text that flows untreated into `_build_context` and then into the reporter prompt. A

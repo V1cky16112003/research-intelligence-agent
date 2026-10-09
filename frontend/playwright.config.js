@@ -4,6 +4,7 @@ import { defineConfig } from '@playwright/test'
 // page.route, so these exercise the real UI without spending provider quota.
 export default defineConfig({
   testDir: './e2e',
+  testIgnore: /auth\.spec\.js/, // runs under playwright.auth.config.js
   timeout: 30_000,
   retries: process.env.CI ? 1 : 0,
   use: { baseURL: 'http://localhost:4173', trace: 'retain-on-failure' },

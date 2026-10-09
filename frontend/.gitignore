@@ -5,3 +5,4 @@ dist/
 .vercel
 test-results/
 playwright-report/
+dist-auth/

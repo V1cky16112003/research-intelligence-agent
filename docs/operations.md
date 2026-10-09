@@ -51,3 +51,25 @@ alerting path. Check *Settings → Notifications → Actions* if those emails st
 `CHAT_RATE_LIMIT_PER_MINUTE` (default 20/IP) returns `429 Retry-After: 60`. Both are
 env vars on the Space; changing them is a restart, not a deploy. The frontend shows
 the API's `detail` text for either.
+
+## Enabling Supabase Auth (one-time)
+
+Order matters: if the backend requires tokens before the frontend sends them, the
+live site 401s every question.
+
+1. Create a free project at supabase.com. *Authentication → Sign In / Providers*:
+   enable **GitHub** (create a GitHub OAuth app; callback URL is shown on that page)
+   and keep **Email**. Leave **anonymous sign-ins off**.
+2. *Authentication → URL Configuration*: Site URL = the Vercel production URL; add
+   `http://localhost:5173` to Redirect URLs for dev.
+3. Vercel env (Production + Preview): `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`
+   (*Project Settings → API*; the anon key is public by design),
+   `VITE_SUPABASE_OAUTH_PROVIDERS=github`. Redeploy and confirm the sign-in screen.
+4. HF Space secret: `SUPABASE_URL`. Only if the project still uses the legacy HS256
+   secret, also `SUPABASE_JWT_SECRET`. Restart, then confirm an unauthenticated
+   `curl -X POST $HF_SPACE_URL/chat -d '{"query":"x"}' -H 'content-type: application/json'`
+   returns 401 and a signed-in question works.
+
+Rollback: delete `SUPABASE_URL` from the Space (API opens again), then the Vercel vars.
+The built-in mailer sends ~2 emails/hour on the free tier; add custom SMTP (e.g. a
+free Resend account) if magic links matter.

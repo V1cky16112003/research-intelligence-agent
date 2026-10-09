@@ -58,6 +58,13 @@ class Settings(BaseSettings):
     # Hard cap on the answer returned to the client — a runaway generation (or a
     # prompt-injected one) should not ship megabytes to the browser.
     max_answer_chars: int = 20_000
+    # Supabase Auth. Setting SUPABASE_URL turns authentication on for /chat and
+    # /chat/stream (see app/auth.py); SUPABASE_JWT_SECRET only for legacy HS256 projects.
+    supabase_url: str = ""
+    supabase_jwt_secret: str = ""
+    # Per-user daily cap on agent runs — the per-user budget that an IP limit can't
+    # give. ~100 runs is ~70k Groq tokens, a third of the free 200k TPD.
+    user_daily_query_limit: int = 100
     # "json" for one JSON object per log line (what log search wants), "text" for local dev.
     log_format: str = "json"
 
@@ -237,30 +244,42 @@ def _client_key(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-async def _rate_limited(request: Request) -> bool:
+async def _rate_limited(request: Request, user_id: str | None = None) -> bool:
     limit = settings.chat_rate_limit_per_minute
     if limit <= 0:
         return False
-    key = _client_key(request)
+    # A verified user ID can't be spoofed; the IP is the fallback when auth is off.
+    key = f"user:{user_id}" if user_id else _client_key(request)
+    return await _over_limit(f"rl:chat:{key}", 60, limit)
+
+
+async def _over_daily_quota(user_id: str) -> bool:
+    limit = settings.user_daily_query_limit
+    if limit <= 0:
+        return False
+    return await _over_limit(f"quota:day:{user_id}", 86_400, limit)
+
+
+async def _over_limit(key: str, window: int, limit: int) -> bool:
     if _redis is not None:
         try:
-            count = await _redis.incr_window(f"rl:chat:{key}", 60)
+            count = await _redis.incr_window(key, window)
             return count > limit
         except Exception as e:
             logger.warning("Redis rate limit unavailable, using in-process window: %s", e)
-    return _rate_limited_local(key, limit)
+    return _rate_limited_local(key, limit, window)
 
 
-def _rate_limited_local(key: str, limit: int) -> bool:
+def _rate_limited_local(key: str, limit: int, window: int = 60) -> bool:
     now = time.time()
     count, window_start = _rate_window.get(key, (0, now))
-    if now - window_start >= 60:
+    if now - window_start >= window:
         count, window_start = 0, now
     count += 1
     _rate_window[key] = (count, window_start)
     if len(_rate_window) > 10_000:  # bound the dict against unique-IP flooding
         for stale, (_, started) in list(_rate_window.items()):
-            if now - started >= 60:
+            if now - started >= 86_400:
                 _rate_window.pop(stale, None)
     return count > limit
 
@@ -281,6 +300,46 @@ def _try_admit() -> bool:
 def _release() -> None:
     global _active_chats
     _active_chats = max(0, _active_chats - 1)
+
+
+async def _gate(request: Request) -> JSONResponse | None:
+    """Auth, then per-user/IP rate limit, then daily quota, then admission. Returns
+    the rejection response, or None when the request is admitted (slot taken)."""
+    user_id = None
+    if settings.supabase_url:
+        from app.auth import AuthError, authenticate
+        try:
+            user = await authenticate(request, settings.supabase_url, settings.supabase_jwt_secret)
+        except AuthError as e:
+            logger.info("Rejected unauthenticated chat: %s", e)
+            return JSONResponse(
+                status_code=401, headers={"WWW-Authenticate": "Bearer"},
+                content={"detail": "Please sign in to ask questions."},
+            )
+        user_id = user.id
+        request.state.user_id = user.id
+    if await _rate_limited(request, user_id):
+        return _rejection(request_rate_limited=True)
+    if user_id and await _over_daily_quota(user_id):
+        return JSONResponse(
+            status_code=429, headers={"Retry-After": "3600"},
+            content={"detail": "You've reached today's question limit — it resets within 24 hours."},
+        )
+    if not _try_admit():
+        return _rejection(request_rate_limited=False)
+    return None
+
+
+def _scoped_session_id(requested: str | None, user_id: str | None) -> str:
+    """session_id is the checkpointer's thread_id, i.e. the key to a conversation's
+    stored history. With auth on, it is namespaced by user so a caller who learns
+    another user's session ID gets a fresh thread instead of their history."""
+    if not user_id:
+        return requested or str(uuid.uuid4())
+    prefix = f"{user_id}:"
+    if requested and requested.startswith(prefix):
+        return requested
+    return prefix + uuid.uuid4().hex
 
 
 def _rejection(request_rate_limited: bool) -> JSONResponse:
@@ -357,12 +416,10 @@ async def ready():
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, request: Request):
     global _query_counter
-    session_id = req.session_id or str(uuid.uuid4())
 
-    if await _rate_limited(request):
-        return _rejection(request_rate_limited=True)
-    if not _try_admit():
-        return _rejection(request_rate_limited=False)
+    if (rejection := await _gate(request)) is not None:
+        return rejection
+    session_id = _scoped_session_id(req.session_id, getattr(request.state, "user_id", None))
 
     _query_counter += 1
     start = time.time()
@@ -458,14 +515,12 @@ async def chat_stream(req: ChatRequest, request: Request):
     The answer is not token-streamed: the critic can reject a draft and send the
     graph back to the executor, so tokens from a draft may never be the final answer.
     """
-    session_id = req.session_id or str(uuid.uuid4())
 
     # Rejections happen before the stream opens so the client sees a real 429/503
     # rather than a 200 whose body happens to say "too many requests".
-    if await _rate_limited(request):
-        return _rejection(request_rate_limited=True)
-    if not _try_admit():
-        return _rejection(request_rate_limited=False)
+    if (rejection := await _gate(request)) is not None:
+        return rejection
+    session_id = _scoped_session_id(req.session_id, getattr(request.state, "user_id", None))
     rid = request_id_var.get()
     released = False
 
