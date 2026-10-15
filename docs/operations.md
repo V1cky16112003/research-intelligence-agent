@@ -14,6 +14,28 @@ Spaces (CPU basic), Neon free, Upstash free, and an optional free OTLP backend.
 4. Verify: `curl $HF_SPACE_URL/ready` should return
    `{"ready": true, "checks": {"database": "ok", "redis": "ok", ...}}`.
 
+## Backups
+
+`.github/workflows/backup.yml` runs `pg_dump` nightly (03:23 UTC) and uploads an
+**AES-256 encrypted** `backup-YYYY-MM-DD.dump.gpg` as an Actions artifact, kept 7 days.
+The repo is public, so the passphrase is mandatory: set it once and store it in your
+password manager, because a secret can't be read back.
+
+```bash
+gh secret set BACKUP_PASSPHRASE        # prompts; paste a long random string
+```
+
+Scope: everything except `chunks` row data (schema is kept). Those rows are almost all
+embeddings and would blow the 500 MB artifact quota; rebuild them from `papers` with
+`ingestion.pipeline`. `papers`, `query_audit_log`, `llm_call_log` are fully covered.
+
+Restore (needs a `postgresql-client` matching the server and a scratch database):
+
+```bash
+gh run download -n db-backup && gpg -d backup-YYYY-MM-DD.dump.gpg > backup.dump
+pg_restore --no-owner -d "$TARGET_DATABASE_URL" backup.dump   # target needs CREATE EXTENSION vector
+```
+
 ## Rollback
 
 - **Backend:** `git push --force space v1.(N-1).0:main`, then re-check `/ready`.
