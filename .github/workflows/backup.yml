@@ -1,0 +1,56 @@
+name: Nightly DB backup
+
+# Free-tier backup: Neon's free plan has only a short point-in-time window.
+# The repo is PUBLIC and Actions artifacts are downloadable by anyone, so the
+# dump is encrypted with BACKUP_PASSPHRASE before upload. No passphrase = no
+# upload (the job fails rather than publishing plaintext).
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check secrets
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          [ -n "$DATABASE_URL" ] || { echo "::error::DATABASE_URL not set"; exit 1; }
+          [ -n "$BACKUP_PASSPHRASE" ] || { echo "::error::BACKUP_PASSPHRASE not set (see docs/operations.md#backups)"; exit 1; }
+
+      - name: Install pg_dump matching the server
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          # pg_dump refuses a server newer than itself, so match the major version.
+          ver=$(psql "$DATABASE_URL" -Atc "SHOW server_version_num" | cut -c1-2)
+          echo "server major: $ver"
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y "postgresql-client-$ver"
+          echo "/usr/lib/postgresql/$ver/bin" >> "$GITHUB_PATH"
+
+      - name: Dump and encrypt
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          # shortcut: chunks rows are skipped (schema kept). They are ~all embeddings
+          # and don't fit the 500 MB artifact quota nightly; rebuild them from `papers`
+          # with ingestion.pipeline. Upgrade to a weekly full dump if that cost matters.
+          pg_dump "$DATABASE_URL" --no-owner --no-privileges --format=custom \
+            --exclude-table-data=chunks --file=backup.dump
+          ls -l backup.dump
+          pg_restore --list backup.dump | grep -q 'TABLE DATA public papers'
+          gpg --batch --pinentry-mode loopback --passphrase "$BACKUP_PASSPHRASE" \
+            --symmetric --cipher-algo AES256 -o "backup-$(date -u +%F).dump.gpg" backup.dump
+          rm backup.dump
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: db-backup
+          path: backup-*.dump.gpg
+          retention-days: 7
