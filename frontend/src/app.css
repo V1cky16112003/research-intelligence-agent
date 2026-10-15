@@ -1,0 +1,16 @@
+/* App shell: sidebar rail + main column. Tokens come from theme.css. */
+.app { display: flex; height: 100vh; height: 100dvh; background: var(--bg); color: var(--text); }
+.app-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.app-bar { display: flex; align-items: center; gap: 8px; min-height: 52px; padding: 8px 16px; }
+.app-title {
+  font: 500 15px/1.3 var(--font-sans); color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.app-scroll { flex: 1; overflow-y: auto; }
+.app-col { width: 100%; max-width: 760px; margin: 0 auto; padding: 0 16px; }
+.app-scroll .app-col { display: flex; flex-direction: column; gap: 20px; padding-top: 12px; padding-bottom: 24px; }
+.app-composer { padding-bottom: 20px; }
+.app-cold {
+  border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px;
+  font-size: 13px; color: var(--accent); text-align: center;
+}
