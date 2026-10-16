@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { openSidebar } from './helpers.js'
 
 const sse = events => events.map(([name, data]) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`).join('')
 
@@ -64,7 +65,7 @@ test('stop button aborts an in-flight request', async ({ page }) => {
   await expect(page.getByLabel('Send')).toBeVisible()
 })
 
-test('history survives a reload and New chat clears it', async ({ page }) => {
+test('history survives a reload and New chat keeps the old conversation', async ({ page }) => {
   await mockStream(page, sse([['answer', ANSWER], ['done', {}]]))
   await page.getByLabel('Your question').fill('How many papers?')
   await page.getByLabel('Send').click()
@@ -73,8 +74,15 @@ test('history survives a reload and New chat clears it', async ({ page }) => {
   await page.reload()
   await expect(page.getByText('50,000 papers')).toBeVisible()
 
+  await openSidebar(page)
   await page.getByLabel('Start a new chat').click()
-  await expect(page.getByText('Try an example:')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'What would you like to research?' })).toBeVisible()
+  await expect(page.getByText('50,000 papers')).toHaveCount(0)
+
+  // the old chat is now in the sidebar history (on mobile the drawer closed itself)
+  const nav = await openSidebar(page)
+  await nav.getByRole('button', { name: 'How many papers?' }).click()
+  await expect(page.getByText('50,000 papers')).toBeVisible()
 })
 
 test('copy button copies the answer', async ({ page, context, browserName }) => {

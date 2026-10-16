@@ -6,7 +6,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:e2e": "playwright test && playwright test -c playwright.auth.config.js"
+    "test:e2e": "playwright test && playwright test -c playwright.auth.config.js",
+    "test:unit": "node --test src/conversations.test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.3",

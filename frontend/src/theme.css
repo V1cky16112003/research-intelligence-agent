@@ -1,0 +1,33 @@
+/* Design tokens + base reset. "The lab notebook": warm ink, paper text, amber accent, teal sources.
+   Dark only; a light theme would be a second :root block here. */
+:root {
+  --bg: #14110f;
+  --surface: #1c1815;
+  --surface-2: #26211d;
+  --line: #342d27;
+  --text: #ece6dc;
+  --muted: #9b9084;
+  --accent: #e0a458;
+  --source: #5fb3a1;
+  --danger: #e5736a;
+  --radius: 12px;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-serif: 'Newsreader', Georgia, 'Times New Roman', serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --ease: 150ms ease;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: var(--font-sans); background: var(--bg); color: var(--text); }
+button, textarea, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+@keyframes fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.fade-in { animation: fadein 0.25s ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}

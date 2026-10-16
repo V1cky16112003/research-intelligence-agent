@@ -29,6 +29,10 @@ class RedisClient:
         """Increment a counter, starting its TTL on first increment. Returns the new count."""
         raise NotImplementedError
 
+    async def ttl(self, key: str) -> int:
+        """Seconds until the key expires; negative when it is missing or has no TTL."""
+        raise NotImplementedError
+
     async def ping(self) -> bool:
         raise NotImplementedError
 
@@ -81,6 +85,13 @@ class UpstashRedisClient(RedisClient):
             r.raise_for_status()
             return int(r.json()[0]["result"])
 
+    async def ttl(self, key: str) -> int:
+        import httpx
+        async with httpx.AsyncClient(timeout=2.0) as c:
+            r = await c.get(f"{self._base_url}/ttl/{key}", headers=self._headers)
+            r.raise_for_status()
+            return int(r.json()["result"])
+
     async def ping(self) -> bool:
         import httpx
         async with httpx.AsyncClient(timeout=2.0) as c:
@@ -111,6 +122,9 @@ class LocalRedisClient(RedisClient):
             pipe.expire(key, ttl, nx=True)
             count, _ = await pipe.execute()
         return int(count)
+
+    async def ttl(self, key: str) -> int:
+        return int(await self._redis.ttl(key))
 
     async def ping(self) -> bool:
         return bool(await self._redis.ping())

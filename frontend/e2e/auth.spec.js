@@ -43,3 +43,20 @@ test('signed-in users send their access token and can sign out', async ({ page }
   await page.getByLabel('Sign out').click()
   await expect(page.getByRole('button', { name: 'Continue with Github' })).toBeVisible()
 })
+
+test('a signed-in user sees only their own chat history', async ({ page }) => {
+  const store = (id, title) => JSON.stringify({ activeId: id, items: [{ id, title, titleLocked: false, pinned: false, createdAt: Date.now(), updatedAt: Date.now(), sessionId: null, messages: [{ role: 'user', content: title }] }] })
+  await page.addInitScript(([k, v, mine, theirs, anon]) => {
+    if (sessionStorage.getItem('seeded')) return
+    localStorage.setItem(k, v)
+    localStorage.setItem('research-agent-conversations-v2:user-1', mine)
+    localStorage.setItem('research-agent-conversations-v2:user-2', theirs)
+    localStorage.setItem('research-agent-conversations-v2:anon', anon)
+    sessionStorage.setItem('seeded', '1')
+  }, [STORAGE_KEY, JSON.stringify(fakeSession()), store('m', 'My own chat'), store('t', 'Other user chat'), store('a', 'Anon chat')])
+  await page.route('http://localhost:54321/**', route => route.fulfill({ status: 204, body: '' }))
+  await page.goto('/')
+  await expect(page.getByRole('button', { name: 'My own chat' })).toBeVisible()
+  await expect(page.getByText('Other user chat')).toHaveCount(0)
+  await expect(page.getByText('Anon chat')).toHaveCount(0)
+})

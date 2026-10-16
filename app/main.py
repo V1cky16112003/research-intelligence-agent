@@ -389,6 +389,48 @@ async def health():
     return {"status": "ok", "version": "1.0.0"}
 
 
+@app.get("/usage")
+async def usage(request: Request):
+    """Read-only view of the caller's daily question budget. Never consumes quota
+    and never 500s: anything unexpected degrades to {"enabled": false}."""
+    limit = settings.user_daily_query_limit
+    if not settings.supabase_url or limit <= 0:
+        return {"enabled": False}
+    from app.auth import AuthError, authenticate
+    try:
+        user = await authenticate(request, settings.supabase_url, settings.supabase_jwt_secret)
+    except AuthError:
+        return JSONResponse(
+            status_code=401, headers={"WWW-Authenticate": "Bearer"},
+            content={"detail": "Please sign in to ask questions."},
+        )
+    except Exception:
+        return {"enabled": False}
+    key = f"quota:day:{user.id}"
+    try:
+        used, reset = None, 86_400
+        if _redis is not None:
+            try:
+                used = int(await _redis.get(key) or 0)
+                ttl = await _redis.ttl(key)
+                reset = ttl if ttl > 0 else 86_400
+            except Exception as e:
+                logger.warning("Redis unavailable for /usage, using in-process window: %s", e)
+                used = None
+        if used is None:
+            count, started = _rate_window.get(key, (0, time.time()))
+            elapsed = time.time() - started
+            used, reset = (count, max(1, int(86_400 - elapsed))) if elapsed < 86_400 else (0, 86_400)
+        return {
+            "enabled": True, "limit": limit, "used": used,
+            "remaining": max(0, limit - used), "resets_in_seconds": reset,
+            "per_minute_limit": settings.chat_rate_limit_per_minute,
+        }
+    except Exception:
+        logger.exception("/usage failed")
+        return {"enabled": False}
+
+
 @app.get("/ready")
 async def ready():
     """Readiness: dependencies answer. 503 when the database is down, since no
