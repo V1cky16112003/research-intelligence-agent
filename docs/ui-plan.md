@@ -1,6 +1,6 @@
 # UI/UX plan — Research Intelligence Agent
 
-Status: implemented 2026-10-15 (uncommitted at time of writing); 43 Playwright + 19 unit + 183 backend tests green. Scope: `frontend/` plus one small backend endpoint. Free-tier only; no new paid services, no new runtime dependencies in the frontend.
+Status: shipped 2026-10-15 in PR #3; 43 Playwright + 19 unit + 183 backend tests green. Scope: `frontend/` plus one small backend endpoint. Free-tier only; no new paid services, no new runtime dependencies in the frontend.
 
 ## 1. Where we are
 

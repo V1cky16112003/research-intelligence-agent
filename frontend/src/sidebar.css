@@ -107,7 +107,8 @@
 }
 .sb-row:hover .sb-actions, .sb-row:focus-within .sb-actions { display: flex; }
 .sb-row[data-active]:hover .sb-actions { background: color-mix(in srgb, var(--accent, #e0a458) 14%, var(--surface, #1d1915)); }
-@media (hover: none) { .sb-actions { display: flex; } }
+/* No hover on touch, so the actions are always shown; in flow, so the title ellipsizes before them. */
+@media (hover: none) { .sb-actions { display: flex; position: static; transform: none; background: transparent; } }
 
 .sb-rename {
   flex: 1; min-width: 0; min-height: 32px; margin: 2px 4px; padding: 0 8px; font-size: 14px;

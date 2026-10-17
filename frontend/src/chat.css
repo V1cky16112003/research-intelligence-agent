@@ -85,7 +85,7 @@
 /* --- Welcome --- */
 .welcome { padding: 48px 0 24px; text-align: center; }
 .welcome-title { font-family: var(--font-serif); font-weight: 400; font-size: clamp(28px, 5vw, 38px); line-height: 1.2; color: var(--text); }
-.welcome-scope { margin: 12px auto 28px; max-width: 520px; font-size: 14px; color: var(--muted); }
+.welcome-scope { margin: 12px auto 28px; max-width: 520px; font-size: 14px; color: var(--muted); text-wrap: balance; }
 .welcome-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; text-align: left; }
 .welcome-card {
   display: flex; flex-direction: column; gap: 8px; padding: 14px 16px;
