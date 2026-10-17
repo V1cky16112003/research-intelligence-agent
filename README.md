@@ -1,13 +1,3 @@
----
-title: Research Intelligence Agent
-emoji: 🔬
-colorFrom: blue
-colorTo: indigo
-sdk: docker
-pinned: false
-app_port: 7860
----
-
 # Research Intelligence Agent
 
 Ask a question about machine-learning research in plain English and get a cited answer. The agent decides whether to search paper text, run a real SQL aggregate, walk the author graph, or search the web, then checks its own draft against what it retrieved before answering.
