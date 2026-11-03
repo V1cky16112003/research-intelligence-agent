@@ -46,6 +46,11 @@ async def probe(name: str, key_env: str, base_url: str, model: str) -> tuple[str
         # 429 means the model exists and our quota is spent — not a retirement.
         if status == 429:
             return name, True, f"{model}: rate limited (alive)"
+        # NIM's free-tier queue routinely stalls past 60s; a timeout is not a retirement
+        # (those answer 404/410), and failing on it fired false alarms. shortcut: a
+        # permanently hung provider goes unnoticed here, but /ready and RAGAS would show it.
+        if type(e).__name__ == "APITimeoutError":
+            return name, True, f"{model}: timed out (inconclusive, not retired)"
         return name, False, f"{model}: {type(e).__name__} {status or ''} {str(e)[:200]}"
 
 
