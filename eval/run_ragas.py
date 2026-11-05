@@ -114,7 +114,7 @@ NIM_ANSWER_MAX_RPM = 35
 # to preserve that separation rather than share one bucket.
 GROQ_JUDGE_MAX_RPM = 20  # under Groq's 30 RPM free tier
 GROQ_JUDGE_MAX_RETRIES = 6
-JUDGE_MAX_WORKERS = 2
+JUDGE_MAX_WORKERS = 1  # shortcut: serial judge, ~2.9k tokens per call vs 8000 TPM; raise only with a paid Groq tier
 JUDGE_MAX_TOKENS = 2048
 
 # answer_relevancy's embeddings. Gemini's OpenAI-compatible endpoint serves these;
@@ -341,8 +341,8 @@ async def run_evaluation(args: argparse.Namespace) -> dict:
         #
         # 2048 is the middle ground: RAGAS's default of 1024 truncates long
         # faithfulness statement lists (IncompleteOutputException — 2 of 3 samples
-        # unscored on 2026-10-08), and with JUDGE_MAX_WORKERS=2 two in-flight
-        # requests stay well under 8000 TPM.
+        # unscored on 2026-10-08), and with JUDGE_MAX_WORKERS=1 one in-flight
+        # request stays well under 8000 TPM (two in-flight left 1-3 samples unscored on 2026-11-05).
         judge_llm = llm_factory(
             args.judge_model, client=groq_client, reasoning_effort="low",
             max_tokens=JUDGE_MAX_TOKENS,
