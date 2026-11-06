@@ -148,7 +148,7 @@ CI (`.github/workflows/`) runs on every push and PR:
 | Frontend E2E | Playwright on desktop and mobile viewports, plus a Supabase-auth build |
 | RAGAS Quality Gate | Faithfulness, answer relevancy and context precision must each score at least 0.80 on a sample of the golden set, against the live database |
 
-Scheduled jobs poll `/ready` every 6 hours (this also keeps the free Space awake), probe every pinned LLM model daily because providers retire free models silently, and take an encrypted nightly database backup.
+Scheduled jobs poll `/ready` every 6 hours (this also keeps the free Space awake), probe every pinned LLM model daily because providers retire free models silently, and take an encrypted nightly database backup. A separate workflow (`supabase-keepalive.yml`) pings the Supabase REST endpoint every Monday and Thursday, because Supabase pauses free projects after about a week of low activity. It needs the `SUPABASE_URL` and `SUPABASE_ANON_KEY` repository secrets.
 
 ---
 
@@ -161,6 +161,8 @@ db/           Connection pool, analytics queries, migrations
 graph/        Neo4j client and knowledge-graph sync
 ingestion/    ArXiv loader, embedding pipeline, date backfill
 eval/         RAGAS golden set and runner
+monitoring/   Embedding drift check (Evidently)
+scripts/      Daily LLM model probe
 frontend/     React chat UI and Playwright tests
 docs/         operations, security, storage, cost/latency, UI plan
 tests/        Backend tests
