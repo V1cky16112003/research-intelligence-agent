@@ -148,7 +148,9 @@ CI (`.github/workflows/`) runs on every push and PR:
 | Frontend E2E | Playwright on desktop and mobile viewports, plus a Supabase-auth build |
 | RAGAS Quality Gate | Faithfulness, answer relevancy and context precision must each score at least 0.80 on a sample of the golden set, against the live database |
 
-Scheduled jobs poll `/ready` every 6 hours (this also keeps the free Space awake), probe every pinned LLM model daily because providers retire free models silently, and take an encrypted nightly database backup. A separate workflow (`supabase-keepalive.yml`) pings the Supabase REST endpoint every Monday and Thursday, because Supabase pauses free projects after about a week of low activity. It needs the `SUPABASE_URL` and `SUPABASE_ANON_KEY` repository secrets.
+Scheduled jobs poll `/ready` every 6 hours (this also keeps the free Space awake), probe every pinned LLM model daily because providers retire free models silently, and take a nightly database backup, encrypted with GPG (AES256) and kept as a CI artifact for 7 days. A separate workflow (`supabase-keepalive.yml`) reads one row from a `keepalive` table through the Supabase REST API every Monday and Thursday, because Supabase pauses free projects after about a week of low database activity. It needs the `SUPABASE_URL` and `SUPABASE_ANON_KEY` repository secrets and a one-row `keepalive` table with row-level security on and a public `select` policy. The bare `/rest/v1/` endpoint returns 401 for the anon key, so it can't be used instead.
+
+A RAGAS run that fails with `judge errored on N sample(s)` is Groq's free-tier rate limit, not a quality drop. Rerun it when no other CI run is going. When a PR's checks have already passed, you can skip the second run on `main` by ending the merge commit title with `[skip ci]`.
 
 ---
 
@@ -161,7 +163,7 @@ db/           Connection pool, analytics queries, migrations
 graph/        Neo4j client and knowledge-graph sync
 ingestion/    ArXiv loader, embedding pipeline, date backfill
 eval/         RAGAS golden set and runner
-monitoring/   Embedding drift check (Evidently)
+monitoring/   Embedding drift check (Evidently), not implemented yet
 scripts/      Daily LLM model probe
 frontend/     React chat UI and Playwright tests
 docs/         operations, security, storage, cost/latency, UI plan
